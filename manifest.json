@@ -1,0 +1,10 @@
+{
+	"id": "tag-to-page",
+	"name": "Tag to Page",
+	"version": "1.0.0",
+	"minAppVersion": "1.0.0",
+	"description": "Click #tag to navigate to [[tag]] page like Logseq",
+	"author": "",
+	"authorUrl": "",
+	"isDesktopOnly": false
+}
