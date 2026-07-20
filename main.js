@@ -82,9 +82,10 @@ function stringValues(value) {
 function frontmatterAliases(frontmatter) {
   if (!isRecord(frontmatter))
     return [];
-  return ["alias", "aliases"].flatMap(
-    (key) => stringValues(frontmatter[key])
-  );
+  return [
+    ...stringValues(frontmatter.alias),
+    ...stringValues(frontmatter.aliases)
+  ];
 }
 var TagToPagePlugin = class extends import_obsidian.Plugin {
   async onload() {
@@ -275,11 +276,7 @@ var TagToPageSettingTab = class extends import_obsidian.PluginSettingTab {
     return (_d = (_c = (_a = LANG[lang]) == null ? void 0 : _a[key]) != null ? _c : (_b = LANG["en"]) == null ? void 0 : _b[key]) != null ? _d : key;
   }
   refreshSettings() {
-    if (typeof this.update === "function") {
-      this.update();
-    } else {
-      this.display();
-    }
+    this.display();
   }
   async setLanguage(value) {
     if (value !== "zh" && value !== "en")

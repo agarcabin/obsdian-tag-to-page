@@ -6,7 +6,7 @@
 
 Obsdian Tag to Page is an Obsidian plugin that makes `#tags` behave more like Logseq: click a tag to open its `[[tag]]` note instead of opening the tag search pane.
 
-> Current release: `1.2.2`
+> Current release: `1.2.3`
 
 ### Features
 
@@ -78,7 +78,7 @@ npm run build  # production build
 
 Obsdian Tag to Page 是一个 Obsidian 插件，让 `#标签` 的行为更像 Logseq：点击标签后直接打开对应的 `[[标签]]` 页面，而不是打开标签搜索面板。
 
-> 当前版本：`1.2.2`
+> 当前版本：`1.2.3`
 
 ### 功能
 

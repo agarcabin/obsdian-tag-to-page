@@ -82,6 +82,7 @@
 }
 
 .tag-to-page-settings__section {
+	--tag-to-page-text-inset: 16px;
 	margin-top: 20px;
 	padding: 18px 20px 4px;
 	border: 1px solid var(--background-modifier-border);
@@ -90,6 +91,9 @@
 }
 
 .tag-to-page-settings__section-header {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
 	margin: 0;
 	padding-bottom: 6px;
 	border: 0;
@@ -99,6 +103,7 @@
 .tag-to-page-settings__section-header .setting-item-info {
 	width: 100%;
 	min-width: 0;
+	margin: 0;
 	padding: 0;
 }
 
@@ -121,6 +126,12 @@
 }
 
 .tag-to-page-settings__setting {
+	display: grid;
+	box-sizing: border-box;
+	grid-template-columns: minmax(0, 1fr) auto;
+	column-gap: 24px;
+	align-items: center;
+	width: 100%;
 	margin: 0;
 	padding: 16px 0;
 	border-top: 1px solid var(--background-modifier-border);
@@ -128,6 +139,8 @@
 
 .tag-to-page-settings__setting .setting-item-info {
 	min-width: 0;
+	margin: 0;
+	padding-inline-start: var(--tag-to-page-text-inset);
 }
 
 .tag-to-page-settings__setting .setting-item-name {
@@ -136,6 +149,11 @@
 
 .tag-to-page-settings__setting .setting-item-description {
 	line-height: 1.5;
+}
+
+.tag-to-page-settings__setting .setting-item-control {
+	margin: 0;
+	padding: 0;
 }
 
 .tag-to-page-settings__declarative-section {
@@ -157,13 +175,27 @@
 }
 
 .tag-to-page-settings__notice {
+	position: relative;
 	display: grid;
+	box-sizing: border-box;
+	align-items: center;
+	width: 100%;
 	gap: 4px;
 	margin: 4px 0 16px;
-	padding: 12px 14px;
-	border-left: 3px solid var(--interactive-accent);
+	padding: 12px 0 12px var(--tag-to-page-text-inset);
+	border-left: 0;
 	border-radius: var(--radius-s);
 	background: var(--background-primary-alt);
+}
+
+.tag-to-page-settings__notice::before {
+	position: absolute;
+	inset-block: 0;
+	inset-inline-start: -8px;
+	width: 3px;
+	border-radius: var(--radius-s);
+	background: var(--interactive-accent);
+	content: "";
 }
 
 .tag-to-page-settings__notice-title {
@@ -180,6 +212,9 @@
 .tag-to-page-settings__notice .setting-item-info {
 	display: grid;
 	gap: 4px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
 }
 
 .tag-to-page-settings__notice .setting-item-name {
@@ -213,6 +248,7 @@
 	}
 
 	.tag-to-page-settings__setting {
+		display: flex;
 		flex-direction: column;
 		gap: 12px;
 		align-items: stretch;
@@ -221,6 +257,7 @@
 
 	.tag-to-page-settings__setting .setting-item-info {
 		width: 100%;
+		padding-inline-start: var(--tag-to-page-text-inset);
 	}
 
 	.tag-to-page-settings__setting .setting-item-control {

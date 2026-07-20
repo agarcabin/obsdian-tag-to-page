@@ -85,9 +85,10 @@ function stringValues(value: unknown): string[] {
 
 function frontmatterAliases(frontmatter: unknown): string[] {
 	if (!isRecord(frontmatter)) return [];
-	return ["alias", "aliases"].flatMap((key) =>
-		stringValues(frontmatter[key]),
-	);
+	return [
+		...stringValues(frontmatter.alias),
+		...stringValues(frontmatter.aliases),
+	];
 }
 
 // ────────────────────────── Plugin class ──────────────────────────
@@ -308,11 +309,7 @@ class TagToPageSettingTab extends PluginSettingTab {
 	}
 
 	private refreshSettings(): void {
-		if (typeof this.update === "function") {
-			this.update();
-		} else {
-			this.display();
-		}
+		this.display();
 	}
 
 	private async setLanguage(value: string): Promise<void> {

@@ -1,6 +1,6 @@
 {
     "name":  "obsdian-tag-to-page",
-    "version":  "1.2.2",
+    "version":  "1.2.3",
     "description":  "Click #tag to navigate to [[tag]] page like Logseq.",
     "main":  "main.js",
     "scripts":  {
