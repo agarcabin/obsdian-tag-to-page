@@ -1,80 +1,10 @@
-[English](#english) | [中文](#中文)
+<p>Language：<a href="#chinese">简体中文</a> | <a href="#english">English</a></p>
+
+---
+
+<a id="chinese"></a>
 
 # Obsdian Tag to Page
-
-## English
-
-Obsdian Tag to Page is an Obsidian plugin that makes `#tags` behave more like Logseq: click a tag to open its `[[tag]]` note instead of opening the tag search pane.
-
-> Current release: `1.2.3`
-
-### Features
-
-- **Open a note from `#tag`** — Click tags in Reading view and Live Preview to open the note with the matching name.
-- **Create missing notes automatically** — If the target note does not exist, the plugin creates an empty Markdown note.
-- **Resolve aliases** — Frontmatter `alias` and `aliases` values are checked when resolving a tag.
-- **Support nested tags** — A tag such as `#parent/child` creates `parent/child.md` and its parent directory when needed.
-- **Open in a new pane** — Hold `Ctrl` on Windows/Linux or `Cmd` on macOS while clicking.
-- **Optional page completion** — Type `#` to search note names and aliases for completion suggestions.
-- **Bilingual settings** — Switch the plugin interface between Chinese and English.
-- **Responsive settings UI** — Clear sections, contextual guidance, and a compact layout for narrow windows and mobile screens.
-
-### Installation
-
-#### Using BRAT (recommended)
-
-1. Install the [Obsidian BRAT](https://obsidian.md/plugins?id=obsidian42-brat) plugin.
-2. Add `agarcabin/obsdian-tag-to-page` in BRAT settings.
-3. Enable **Tag to Page** in the list of installed community plugins.
-
-#### Manual installation
-
-1. Download `main.js`, `manifest.json`, and `styles.css` from the [Releases](https://github.com/agarcabin/obsdian-tag-to-page/releases) page.
-2. Copy them to `<your vault>/.obsidian/plugins/tag-to-page/`.
-3. Enable **Tag to Page** under **Settings → Community plugins**.
-
-The repository name is `obsdian-tag-to-page`; the plugin ID and installation directory remain `tag-to-page` for compatibility with existing installations.
-
-### Usage
-
-Click a `#tag` in a note. The plugin:
-
-1. Looks for a note named `tag`.
-2. Checks frontmatter `alias` and `aliases` values if the note is not found.
-3. Creates `tag.md` if no matching note exists.
-4. Opens the resolved note.
-
-Together with Obsidian's backlinks pane, this provides a Logseq-like way to discover related notes through tags.
-
-### Settings
-
-| Setting | Description |
-| --- | --- |
-| Language | Switch the interface between Chinese and English. |
-| Show page completion when typing `#` | Suggest matching note names and aliases. This may add some scanning overhead. |
-
-### How it works
-
-- **Click interception** — Captures clicks on `.tag` and `.cm-hashtag` elements during the DOM capture phase and prevents the default tag-search behavior.
-- **Note resolution** — Uses `metadataCache.getFirstLinkpathDest()` and scans frontmatter aliases to resolve the destination.
-- **Completion** — Uses CodeMirror 6 autocomplete to provide suggestions from Markdown note names and aliases.
-
-### Known limitations
-
-- Enabling `#` page completion replaces the default `[[` page completion provider.
-- Tag clicks are not supported in Source mode.
-
-### Development
-
-```bash
-git clone https://github.com/agarcabin/obsdian-tag-to-page.git
-cd obsdian-tag-to-page
-npm install
-npm run dev    # watch mode
-npm run build  # production build
-```
-
-## 中文
 
 Obsdian Tag to Page 是一个 Obsidian 插件，让 `#标签` 的行为更像 Logseq：点击标签后直接打开对应的 `[[标签]]` 页面，而不是打开标签搜索面板。
 
@@ -144,4 +74,80 @@ cd obsdian-tag-to-page
 npm install
 npm run dev    # 监听模式
 npm run build  # 正式构建
+```
+
+---
+
+<a id="english"></a>
+
+# Obsdian Tag to Page
+
+Obsdian Tag to Page is an Obsidian plugin that makes `#tags` behave more like Logseq: click a tag to open its `[[tag]]` note instead of opening the tag search pane.
+
+> Current release: `1.2.3`
+
+### Features
+
+- **Open a note from `#tag`** — Click tags in Reading view and Live Preview to open the note with the matching name.
+- **Create missing notes automatically** — If the target note does not exist, the plugin creates an empty Markdown note.
+- **Resolve aliases** — Frontmatter `alias` and `aliases` values are checked when resolving a tag.
+- **Support nested tags** — A tag such as `#parent/child` creates `parent/child.md` and its parent directory when needed.
+- **Open in a new pane** — Hold `Ctrl` on Windows/Linux or `Cmd` on macOS while clicking.
+- **Optional page completion** — Type `#` to search note names and aliases for completion suggestions.
+- **Bilingual settings** — Switch the plugin interface between Chinese and English.
+- **Responsive settings UI** — Clear sections, contextual guidance, and a compact layout for narrow windows and mobile screens.
+
+### Installation
+
+#### Using BRAT (recommended)
+
+1. Install the [Obsidian BRAT](https://obsidian.md/plugins?id=obsidian42-brat) plugin.
+2. Add `agarcabin/obsdian-tag-to-page` in BRAT settings.
+3. Enable **Tag to Page** in the list of installed community plugins.
+
+#### Manual installation
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [Releases](https://github.com/agarcabin/obsdian-tag-to-page/releases) page.
+2. Copy them to `<your vault>/.obsidian/plugins/tag-to-page/`.
+3. Enable **Tag to Page** under **Settings → Community plugins**.
+
+The repository name is `obsdian-tag-to-page`; the plugin ID and installation directory remain `tag-to-page` for compatibility with existing installations.
+
+### Usage
+
+Click a `#tag` in a note. The plugin:
+
+1. Looks for a note named `tag`.
+2. Checks frontmatter `alias` and `aliases` values if the note is not found.
+3. Creates `tag.md` if no matching note exists.
+4. Opens the resolved note.
+
+Together with Obsidian's backlinks pane, this provides a Logseq-like way to discover related notes through tags.
+
+### Settings
+
+| Setting | Description |
+| --- | --- |
+| Language | Switch the interface between Chinese and English. |
+| Show page completion when typing `#` | Suggest matching note names and aliases. This may add some scanning overhead. |
+
+### How it works
+
+- **Click interception** — Captures clicks on `.tag` and `.cm-hashtag` elements during the DOM capture phase and prevents the default tag-search behavior.
+- **Note resolution** — Uses `metadataCache.getFirstLinkpathDest()` and scans frontmatter aliases to resolve the destination.
+- **Completion** — Uses CodeMirror 6 autocomplete to provide suggestions from Markdown note names and aliases.
+
+### Known limitations
+
+- Enabling `#` page completion replaces the default `[[` page completion provider.
+- Tag clicks are not supported in Source mode.
+
+### Development
+
+```bash
+git clone https://github.com/agarcabin/obsdian-tag-to-page.git
+cd obsdian-tag-to-page
+npm install
+npm run dev    # watch mode
+npm run build  # production build
 ```
