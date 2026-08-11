@@ -1,8 +1,8 @@
 {
     "id": "tag-to-page",
     "name": "Tag to Page",
-    "version": "1.2.4",
-    "minAppVersion": "1.4.0",
+    "version": "1.2.5",
+    "minAppVersion": "1.13.0",
     "description": "Click #tag to navigate to [[tag]] page like Logseq.",
     "author": "A Qiong 阿琼",
     "authorUrl": "",

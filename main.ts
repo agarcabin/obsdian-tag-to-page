@@ -315,7 +315,7 @@ function frontmatterAliases(frontmatter: unknown): string[] {
 
 function resolveLanguage(preference: LanguagePreference): Lang {
 	if (preference !== "auto") return preference;
-	const systemLanguage = globalThis.navigator?.language.toLowerCase() ?? "en";
+	const systemLanguage = activeWindow.navigator.language.toLowerCase();
 	return systemLanguage.startsWith("zh") ? "zh" : "en";
 }
 
@@ -327,12 +327,22 @@ export default class TagToPagePlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		this.registerDomEvent(document, "click", this.onTagClick.bind(this), true);
+		this.registerDomEvent(
+			document,
+			"click",
+			(event: MouseEvent) => this.onTagClick(event),
+			true,
+		);
 		// Mobile: intercept touchend before Obsidian handles it
-		this.registerDomEvent(document, "touchend", this.onTagTouchEnd.bind(this), {
-			capture: true,
-			passive: false,
-		});
+		this.registerDomEvent(
+			document,
+			"touchend",
+			(event: TouchEvent) => this.onTagTouchEnd(event),
+			{
+				capture: true,
+				passive: false,
+			},
+		);
 
 		if (this.settings.autocompleteOn) {
 			this.registerAutocompleteOverride();
@@ -470,7 +480,10 @@ export default class TagToPagePlugin extends Plugin {
 	}
 
 	private async enterEditMode(sourceLeaf: WorkspaceLeaf | null): Promise<void> {
-		const leaf = sourceLeaf ?? this.app.workspace.activeLeaf;
+		const leaf =
+			sourceLeaf ??
+			this.app.workspace.getActiveViewOfType(MarkdownView)?.leaf ??
+			null;
 		if (!leaf || !(leaf.view instanceof MarkdownView)) return;
 		this.app.workspace.setActiveLeaf(leaf, { focus: false });
 

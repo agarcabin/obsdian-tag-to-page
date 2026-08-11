@@ -250,20 +250,29 @@ function frontmatterAliases(frontmatter) {
   ];
 }
 function resolveLanguage(preference) {
-  var _a, _b;
   if (preference !== "auto")
     return preference;
-  const systemLanguage = (_b = (_a = globalThis.navigator) == null ? void 0 : _a.language.toLowerCase()) != null ? _b : "en";
+  const systemLanguage = activeWindow.navigator.language.toLowerCase();
   return systemLanguage.startsWith("zh") ? "zh" : "en";
 }
 var TagToPagePlugin = class extends import_obsidian.Plugin {
   async onload() {
     await this.loadSettings();
-    this.registerDomEvent(document, "click", this.onTagClick.bind(this), true);
-    this.registerDomEvent(document, "touchend", this.onTagTouchEnd.bind(this), {
-      capture: true,
-      passive: false
-    });
+    this.registerDomEvent(
+      document,
+      "click",
+      (event) => this.onTagClick(event),
+      true
+    );
+    this.registerDomEvent(
+      document,
+      "touchend",
+      (event) => this.onTagTouchEnd(event),
+      {
+        capture: true,
+        passive: false
+      }
+    );
     if (this.settings.autocompleteOn) {
       this.registerAutocompleteOverride();
     }
@@ -385,7 +394,8 @@ var TagToPagePlugin = class extends import_obsidian.Plugin {
     }
   }
   async enterEditMode(sourceLeaf) {
-    const leaf = sourceLeaf != null ? sourceLeaf : this.app.workspace.activeLeaf;
+    var _a, _b;
+    const leaf = (_b = sourceLeaf != null ? sourceLeaf : (_a = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView)) == null ? void 0 : _a.leaf) != null ? _b : null;
     if (!leaf || !(leaf.view instanceof import_obsidian.MarkdownView))
       return;
     this.app.workspace.setActiveLeaf(leaf, { focus: false });

@@ -1,6 +1,6 @@
 {
     "name":  "obsdian-tag-to-page",
-    "version":  "1.2.4",
+    "version":  "1.2.5",
     "description":  "Click #tag to navigate to [[tag]] page like Logseq.",
     "main":  "main.js",
     "scripts":  {
@@ -8,7 +8,8 @@
                     "build":  "tsc -noEmit -skipLibCheck \u0026\u0026 node esbuild.config.mjs production"
                 },
     "dependencies":  {
-                        "@codemirror/autocomplete":  "^6.20.3"
+                        "@codemirror/autocomplete":  "^6.20.3",
+                        "@codemirror/view":  "^6.38.6"
                     },
     "devDependencies":  {
                             "@types/node":  "^16.11.6",
