@@ -1,5 +1,11 @@
-﻿import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
-import type { SettingDefinitionItem, TFile } from "obsidian";
+﻿import {
+	App,
+	MarkdownView,
+	normalizePath,
+	Plugin,
+	PluginSettingTab,
+} from "obsidian";
+import type { SettingDefinitionItem, TFile, WorkspaceLeaf } from "obsidian";
 import {
 	autocompletion,
 	CompletionContext,
@@ -9,42 +15,66 @@ import {
 // ────────────────────────── i18n ──────────────────────────
 
 type Lang = "zh" | "en";
+type LanguagePreference = "auto" | Lang;
+type MissingPageAction = "create" | "openTag" | "edit" | "none";
+type SettingKey =
+	| "language"
+	| "clickToPage"
+	| "missingPageAction"
+	| "autocompleteOn"
+	| "autocompleteAliases";
 
 const LANG: Record<Lang, Record<string, string>> = {
 	zh: {
 		settingHeader: "Tag to Page",
 		pluginDesc:
 			"点击 #标签 时直接跳转到 [[页面]]，而不是打开标签搜索面板。结合反链面板使用，还原 Logseq 的标签浏览体验。",
-		preferences: "偏好设置",
-		preferencesDesc: "选择设置界面语言，并按需调整标签页面行为。",
+		settings: "设置",
 		language: "界面语言",
-		languageDesc: "选择插件设置界面使用的语言。",
-		behavior: "标签行为",
-		behaviorDesc: "控制点击标签和输入 # 时的页面跳转体验。",
-		autocompleteName: "输入 # 时显示页面补全",
+		languageDesc: "自动跟随系统，也可固定使用中文或 English。",
+		languageAuto: "自动（跟随系统）",
+		clickToPageName: "点击标签跳转到同名页面",
+		clickToPageDesc:
+			"点击 #标签 时打开同名页面，类似Logseq的标签浏览体验。",
+		missingPageActionName: "页面不存在时动作",
+		missingPageActionDesc: "选择标签没有同名页面时执行的操作。",
+		missingPageActionCreate: "自动创建同名页面",
+		missingPageActionOpenTag: "打开对应标签",
+		missingPageActionEdit: "进入编辑状态",
+		missingPageActionNone: "无任何动作",
+		autocompleteName: "输入#后页面补全",
 		autocompleteDesc:
-			"开启后，输入 # 会提示匹配的笔记文件名和别名。切换开关后插件会自动重载以应用设置。",
-		autocompleteNotice: "使用提示",
-		autocompleteNoticeDesc:
-			"页面补全会替换 Obsidian 默认的 [[ 页面选择器，并可能增加扫描开销；遇到异常时可关闭此选项。",
+			"输入 # 后显示匹配的页面名称。切换后插件会自动重载以应用设置。",
+		autocompleteAliasesName: "输入#后的页面补全 额外支持页面别称",
+		autocompleteAliasesDesc:
+			"补全结果同时包含页面属性中的 alias 和 aliases；需先开启页面补全。",
 		repository: "GitHub 项目主页",
 	},
 	en: {
 		settingHeader: "Tag to Page",
 		pluginDesc:
 			"Click #tag to navigate directly to [[page]] instead of opening the tag search panel. Use with the Backlinks pane for a Logseq-like tag browsing experience.",
-		preferences: "Preferences",
-		preferencesDesc: "Choose the settings language and adjust tag-page behavior.",
+		settings: "Settings",
 		language: "Interface language",
-		languageDesc: "Choose the language used by this settings page.",
-		behavior: "Tag behavior",
-		behaviorDesc: "Control tag clicks and page suggestions while typing #.",
-		autocompleteName: "Page-name suggestions with #",
+		languageDesc:
+			"Follow the system language automatically, or always use Chinese or English.",
+		languageAuto: "Auto (follow system)",
+		clickToPageName: "Open the same-name page when clicking a tag",
+		clickToPageDesc:
+			"Click #tag to open the page with the same name for a Logseq-like tag browsing experience.",
+		missingPageActionName: "When the page does not exist",
+		missingPageActionDesc:
+			"Choose what happens when a tag has no page with the same name.",
+		missingPageActionCreate: "Create the same-name page",
+		missingPageActionOpenTag: "Open the corresponding tag",
+		missingPageActionEdit: "Enter editing mode",
+		missingPageActionNone: "Do nothing",
+		autocompleteName: "Page completion after #",
 		autocompleteDesc:
-			"When on, typing # suggests matching file names and frontmatter aliases. The plugin reloads automatically after this setting changes.",
-		autocompleteNotice: "Please note",
-		autocompleteNoticeDesc:
-			"Page completion replaces Obsidian's default [[ link picker and may add scanning overhead. Turn it off if you notice unexpected behavior.",
+			"Show matching page names after typing #. The plugin reloads automatically after this setting changes.",
+		autocompleteAliasesName: "Also include page aliases in # completion",
+		autocompleteAliasesDesc:
+			"Also suggest alias and aliases values from page properties. Page completion must be enabled.",
 		repository: "GitHub repository",
 	},
 };
@@ -52,8 +82,11 @@ const LANG: Record<Lang, Record<string, string>> = {
 // ──────────────────────────── Settings ────────────────────────────
 
 interface TagToPageSettings {
+	clickToPage: boolean;
+	missingPageAction: MissingPageAction;
 	autocompleteOn: boolean;
-	language: Lang;
+	autocompleteAliases: boolean;
+	language: LanguagePreference;
 }
 
 interface PluginManager {
@@ -62,8 +95,11 @@ interface PluginManager {
 }
 
 const DEFAULT_SETTINGS: TagToPageSettings = {
+	clickToPage: true,
+	missingPageAction: "create",
 	autocompleteOn: false,
-	language: "zh",
+	autocompleteAliases: true,
+	language: "auto",
 };
 
 const TAG_COMPLETION_PATTERN = new RegExp(
@@ -91,6 +127,12 @@ function frontmatterAliases(frontmatter: unknown): string[] {
 	];
 }
 
+function resolveLanguage(preference: LanguagePreference): Lang {
+	if (preference !== "auto") return preference;
+	const systemLanguage = globalThis.navigator?.language.toLowerCase() ?? "en";
+	return systemLanguage.startsWith("zh") ? "zh" : "en";
+}
+
 // ────────────────────────── Plugin class ──────────────────────────
 
 export default class TagToPagePlugin extends Plugin {
@@ -116,6 +158,7 @@ export default class TagToPagePlugin extends Plugin {
 	// ── click handler (Reading View + Live Preview) ──
 
 	private onTagTouchEnd(evt: TouchEvent) {
+		if (!this.settings.clickToPage) return;
 		// Find the element under the finger
 		const touch = evt.changedTouches[0];
 		if (!touch) return;
@@ -130,17 +173,21 @@ export default class TagToPagePlugin extends Plugin {
 		);
 		if (!contentArea) return;
 
-		evt.stopPropagation();
-		evt.preventDefault();
-
 		let tagName = (tagEl.textContent ?? "").trim();
 		tagName = tagName.replace(/^#/, "").trim();
 		if (!tagName) return;
 
-		void this.navigateToTagPage(tagName, false);
+		const file = this.findTagPage(tagName);
+		if (!file && this.settings.missingPageAction === "openTag") return;
+		const sourceLeaf = this.findMarkdownLeaf(contentArea);
+
+		evt.stopPropagation();
+		evt.preventDefault();
+		void this.activateTag(tagName, file, false, sourceLeaf);
 	}
 
 	private onTagClick(evt: MouseEvent) {
+		if (!this.settings.clickToPage) return;
 		if (evt.button !== 0) return;
 		const target = evt.target;
 		if (!(target instanceof HTMLElement)) return;
@@ -153,31 +200,103 @@ export default class TagToPagePlugin extends Plugin {
 		);
 		if (!contentArea) return;
 
-		evt.stopPropagation();
-		evt.preventDefault();
-
 		let tagName = (tagEl.textContent ?? "").trim();
 		tagName = tagName.replace(/^#/, "").trim();
 		if (!tagName) return;
 
-		void this.navigateToTagPage(tagName, evt.ctrlKey || evt.metaKey);
+		const file = this.findTagPage(tagName);
+		if (!file && this.settings.missingPageAction === "openTag") return;
+		const sourceLeaf = this.findMarkdownLeaf(contentArea);
+
+		evt.stopPropagation();
+		evt.preventDefault();
+		void this.activateTag(
+			tagName,
+			file,
+			evt.ctrlKey || evt.metaKey,
+			sourceLeaf,
+		);
 	}
 
 	// ── navigation ──
 
-	private async navigateToTagPage(tagName: string, openInNewLeaf: boolean) {
-		const { vault, metadataCache, workspace } = this.app;
+	private findTagPage(tagName: string): TFile | null {
+		return (
+			this.app.metadataCache.getFirstLinkpathDest(tagName, "") ??
+			this.findFileByAlias(tagName)
+		);
+	}
+
+	private findMarkdownLeaf(element: Element): WorkspaceLeaf | null {
+		return (
+			this.app.workspace
+				.getLeavesOfType("markdown")
+				.find((leaf) => leaf.view.containerEl.contains(element)) ?? null
+		);
+	}
+
+	private async activateTag(
+		tagName: string,
+		file: TFile | null,
+		openInNewLeaf: boolean,
+		sourceLeaf: WorkspaceLeaf | null,
+	) {
 		try {
-			let file = metadataCache.getFirstLinkpathDest(tagName, "");
-			if (!file) file = this.findFileByAlias(tagName);
-			if (!file) {
-				await this.ensureParentDirectories(tagName);
-				file = await vault.create(tagName + ".md", "");
+			if (file) {
+				if (sourceLeaf) {
+					this.app.workspace.setActiveLeaf(sourceLeaf, { focus: false });
+				}
+				await this.app.workspace.openLinkText(
+					file.path,
+					"",
+					openInNewLeaf,
+				);
+				return;
 			}
-			await workspace.openLinkText(file.basename, "", openInNewLeaf);
+
+			switch (this.settings.missingPageAction) {
+				case "create": {
+					if (sourceLeaf) {
+						this.app.workspace.setActiveLeaf(sourceLeaf, { focus: false });
+					}
+					await this.ensureParentDirectories(tagName);
+					const createdFile = await this.app.vault.create(
+						tagName + ".md",
+						"",
+					);
+					await this.app.workspace.openLinkText(
+						createdFile.path,
+						"",
+						openInNewLeaf,
+					);
+					return;
+				}
+				case "edit":
+					await this.enterEditMode(sourceLeaf);
+					return;
+				case "openTag":
+				case "none":
+					return;
+			}
 		} catch (err) {
-			console.error("Tag to Page: failed to navigate", err);
+			console.error("Tag to Page: failed to handle tag", err);
 		}
+	}
+
+	private async enterEditMode(sourceLeaf: WorkspaceLeaf | null): Promise<void> {
+		const leaf = sourceLeaf ?? this.app.workspace.activeLeaf;
+		if (!leaf || !(leaf.view instanceof MarkdownView)) return;
+		this.app.workspace.setActiveLeaf(leaf, { focus: false });
+
+		if (leaf.view.getMode() !== "source") {
+			const viewState = leaf.getViewState();
+			await leaf.setViewState({
+				...viewState,
+				state: { ...viewState.state, mode: "source" },
+			});
+		}
+
+		if (leaf.view instanceof MarkdownView) leaf.view.editor.focus();
 	}
 
 	private findFileByAlias(alias: string): TFile | null {
@@ -229,27 +348,31 @@ export default class TagToPagePlugin extends Plugin {
 			[];
 
 		for (const file of vault.getMarkdownFiles()) {
+			const basenameKey = file.basename.toLowerCase();
 			if (
-				file.basename.toLowerCase().includes(query) &&
-				!seen.has(file.basename)
+				basenameKey.includes(query) &&
+				!seen.has(basenameKey)
 			) {
-				seen.add(file.basename);
+				seen.add(basenameKey);
 				suggestions.push({ label: file.basename, apply: file.basename });
 			}
 
-			const cache = metadataCache.getCache(file.path);
-			const fm = cache?.frontmatter;
-			if (!fm) continue;
+			if (this.settings.autocompleteAliases) {
+				const cache = metadataCache.getCache(file.path);
+				const fm = cache?.frontmatter;
+				if (!fm) continue;
 
-			for (const alias of frontmatterAliases(fm)) {
-				if (seen.has(alias)) continue;
-				if (alias.toLowerCase().includes(query)) {
-					seen.add(alias);
-					suggestions.push({
-						label: alias,
-						apply: alias,
-						detail: `→ ${file.basename}`,
-					});
+				for (const alias of frontmatterAliases(fm)) {
+					const aliasKey = alias.toLowerCase();
+					if (seen.has(aliasKey)) continue;
+					if (aliasKey.includes(query)) {
+						seen.add(aliasKey);
+						suggestions.push({
+							label: alias,
+							apply: alias,
+							detail: `→ ${file.basename}`,
+						});
+					}
 				}
 			}
 		}
@@ -281,9 +404,25 @@ export default class TagToPagePlugin extends Plugin {
 	async loadSettings() {
 		const loadedData: unknown = await this.loadData();
 		const stored = isRecord(loadedData) ? loadedData : {};
+		const storedLanguage = stored.language;
+		const storedMissingPageAction = stored.missingPageAction;
 		this.settings = {
+			clickToPage: stored.clickToPage !== false,
+			missingPageAction:
+				storedMissingPageAction === "create" ||
+				storedMissingPageAction === "openTag" ||
+				storedMissingPageAction === "edit" ||
+				storedMissingPageAction === "none"
+					? storedMissingPageAction
+					: DEFAULT_SETTINGS.missingPageAction,
 			autocompleteOn: stored.autocompleteOn === true,
-			language: stored.language === "en" ? "en" : DEFAULT_SETTINGS.language,
+			autocompleteAliases: stored.autocompleteAliases !== false,
+			language:
+				storedLanguage === "zh" ||
+				storedLanguage === "en" ||
+				storedLanguage === "auto"
+					? storedLanguage
+					: DEFAULT_SETTINGS.language,
 		};
 	}
 
@@ -300,29 +439,43 @@ class TagToPageSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: TagToPagePlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+		this.containerEl.addClass("tag-to-page-settings");
 	}
 
-	/** Get translated string for the current language. */
 	private t(key: string): string {
-		const lang = this.plugin.settings.language;
+		const lang = resolveLanguage(this.plugin.settings.language);
 		return LANG[lang]?.[key] ?? LANG["en"]?.[key] ?? key;
 	}
 
-	private refreshSettings(): void {
-		this.display();
+	private async readInstalledVersion(): Promise<string> {
+		const { manifest } = this.plugin;
+		const pluginDir =
+			manifest.dir ??
+			normalizePath(
+				`${this.app.vault.configDir}/plugins/${manifest.id}`,
+			);
+		const manifestPath = normalizePath(`${pluginDir}/manifest.json`);
+
+		try {
+			const rawManifest = await this.app.vault.adapter.read(manifestPath);
+			const parsed: unknown = JSON.parse(rawManifest.replace(/^\uFEFF/, ""));
+			if (isRecord(parsed) && typeof parsed.version === "string") {
+				const version = parsed.version.trim();
+				if (version) return version;
+			}
+		} catch (err) {
+			console.warn("Tag to Page: failed to read installed version", err);
+		}
+
+		return manifest.version;
 	}
 
-	private async setLanguage(value: string): Promise<void> {
-		if (value !== "zh" && value !== "en") return;
-		this.plugin.settings.language = value;
-		await this.plugin.saveSettings();
-		this.refreshSettings();
+	private async updateVersionBadge(versionEl: HTMLElement): Promise<void> {
+		const version = await this.readInstalledVersion();
+		if (versionEl.isConnected) versionEl.setText(`v${version}`);
 	}
 
-	private async setAutocompleteEnabled(value: boolean): Promise<void> {
-		this.plugin.settings.autocompleteOn = value;
-		await this.plugin.saveSettings();
-
+	private async reloadPlugin(): Promise<void> {
 		const id = this.plugin.manifest.id;
 		const pluginManager = (this.plugin.app as App & {
 			plugins: PluginManager;
@@ -331,138 +484,163 @@ class TagToPageSettingTab extends PluginSettingTab {
 		await pluginManager.enablePlugin(id);
 	}
 
-	getSettingDefinitions(): SettingDefinitionItem[] {
+	async setControlValue(key: SettingKey, value: unknown): Promise<void> {
+		if (
+			key === "language" &&
+			(value === "auto" || value === "zh" || value === "en")
+		) {
+			this.plugin.settings.language = value;
+			await this.plugin.saveSettings();
+			this.update();
+			return;
+		}
+
+		if (
+			key === "missingPageAction" &&
+			(value === "create" ||
+				value === "openTag" ||
+				value === "edit" ||
+				value === "none")
+		) {
+			this.plugin.settings.missingPageAction = value;
+			await this.plugin.saveSettings();
+			return;
+		}
+
+		if (typeof value !== "boolean") return;
+
+		if (key === "clickToPage") {
+			this.plugin.settings.clickToPage = value;
+			await this.plugin.saveSettings();
+			this.update();
+			return;
+		}
+
+		if (key === "autocompleteAliases") {
+			this.plugin.settings.autocompleteAliases = value;
+			await this.plugin.saveSettings();
+			return;
+		}
+
+		if (key === "autocompleteOn") {
+			this.plugin.settings.autocompleteOn = value;
+			await this.plugin.saveSettings();
+			await this.reloadPlugin();
+		}
+	}
+
+	getSettingDefinitions(): SettingDefinitionItem<SettingKey>[] {
 		return [
 			{
+				name: this.t("settingHeader"),
+				desc: this.t("pluginDesc"),
+				searchable: false,
+				render: (setting) => {
+					const { settingEl } = setting;
+					settingEl.empty();
+					settingEl.addClass("tag-to-page-settings__hero");
+
+					const icon = settingEl.createDiv({
+						cls: "tag-to-page-settings__icon",
+						text: "#",
+					});
+					icon.setAttr("aria-hidden", "true");
+
+					const body = settingEl.createDiv({
+						cls: "tag-to-page-settings__hero-body",
+					});
+					const heroTitle = body.createDiv({
+						cls: "tag-to-page-settings__hero-title",
+						text: this.t("settingHeader"),
+					});
+					heroTitle.setAttr("role", "heading");
+					heroTitle.setAttr("aria-level", "2");
+					body.createEl("p", {
+						cls: "tag-to-page-settings__hero-description",
+						text: this.t("pluginDesc"),
+					});
+
+					const meta = body.createDiv({
+						cls: "tag-to-page-settings__hero-meta",
+					});
+					const versionBadge = meta.createSpan({
+						cls: "tag-to-page-settings__version",
+						text: `v${this.plugin.manifest.version}`,
+					});
+					void this.updateVersionBadge(versionBadge);
+					const repositoryLink = meta.createEl("a", {
+						text: this.t("repository"),
+						href: "https://github.com/agarcabin/obsdian-tag-to-page",
+					});
+					repositoryLink.setAttr("target", "_blank");
+					repositoryLink.setAttr("rel", "noopener");
+				},
+			},
+			{
 				type: "group",
-				heading: this.t("preferences"),
+				heading: this.t("settings"),
 				cls: "tag-to-page-settings__declarative-section",
 				items: [
 					{
 						name: this.t("language"),
 						desc: this.t("languageDesc"),
-						render: (setting) => {
-							setting.settingEl.addClass("tag-to-page-settings__setting");
-							setting.addDropdown((dropdown) =>
-								dropdown
-									.addOption("zh", "中文")
-									.addOption("en", "English")
-									.setValue(this.plugin.settings.language)
-									.onChange((value) => this.setLanguage(value)),
-							);
+						control: {
+							type: "dropdown",
+							key: "language",
+							defaultValue: DEFAULT_SETTINGS.language,
+							options: {
+								auto: this.t("languageAuto"),
+								zh: "中文",
+								en: "English",
+							},
 						},
 					},
-				],
-			},
-			{
-				type: "group",
-				heading: this.t("behavior"),
-				cls: "tag-to-page-settings__declarative-section",
-				items: [
+					{
+						name: this.t("clickToPageName"),
+						desc: this.t("clickToPageDesc"),
+						control: {
+							type: "toggle",
+							key: "clickToPage",
+							defaultValue: DEFAULT_SETTINGS.clickToPage,
+						},
+					},
+					{
+						name: this.t("missingPageActionName"),
+						desc: this.t("missingPageActionDesc"),
+						control: {
+							type: "dropdown",
+							key: "missingPageAction",
+							defaultValue: DEFAULT_SETTINGS.missingPageAction,
+							disabled: () => !this.plugin.settings.clickToPage,
+							options: {
+								create: this.t("missingPageActionCreate"),
+								openTag: this.t("missingPageActionOpenTag"),
+								edit: this.t("missingPageActionEdit"),
+								none: this.t("missingPageActionNone"),
+							},
+						},
+					},
 					{
 						name: this.t("autocompleteName"),
 						desc: this.t("autocompleteDesc"),
-						render: (setting) => {
-							setting.settingEl.addClass("tag-to-page-settings__setting");
-							setting.addToggle((toggle) =>
-								toggle
-									.setValue(this.plugin.settings.autocompleteOn)
-									.onChange((value) => this.setAutocompleteEnabled(value)),
-							);
+						control: {
+							type: "toggle",
+							key: "autocompleteOn",
+							defaultValue: DEFAULT_SETTINGS.autocompleteOn,
 						},
 					},
 					{
-						name: this.t("autocompleteNotice"),
-						desc: this.t("autocompleteNoticeDesc"),
-						render: (setting) => {
-							setting.settingEl.addClass("tag-to-page-settings__notice");
+						name: this.t("autocompleteAliasesName"),
+						desc: this.t("autocompleteAliasesDesc"),
+						control: {
+							type: "toggle",
+							key: "autocompleteAliases",
+							defaultValue: DEFAULT_SETTINGS.autocompleteAliases,
+							disabled: () => !this.plugin.settings.autocompleteOn,
 						},
 					},
 				],
 			},
 		];
-	}
-
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
-		containerEl.addClass("tag-to-page-settings");
-
-		const hero = containerEl.createDiv({ cls: "tag-to-page-settings__hero" });
-		const icon = hero.createDiv({
-			cls: "tag-to-page-settings__icon",
-			text: "#",
-		});
-		icon.setAttr("aria-hidden", "true");
-
-		const heroBody = hero.createDiv({ cls: "tag-to-page-settings__hero-body" });
-		const heroHeading = new Setting(heroBody)
-			.setName(this.t("settingHeader"))
-			.setDesc(this.t("pluginDesc"))
-			.setHeading();
-		heroHeading.settingEl.addClass("tag-to-page-settings__hero-heading");
-		const heroMeta = heroBody.createDiv({ cls: "tag-to-page-settings__hero-meta" });
-		heroMeta.createSpan({
-			cls: "tag-to-page-settings__version",
-			text: `v${this.plugin.manifest.version}`,
-		});
-		const repositoryLink = heroMeta.createEl("a", {
-			text: this.t("repository"),
-			href: "https://github.com/agarcabin/obsdian-tag-to-page",
-		});
-		repositoryLink.setAttr("target", "_blank");
-		repositoryLink.setAttr("rel", "noopener");
-
-		const preferencesSection = containerEl.createDiv({
-			cls: "tag-to-page-settings__section",
-		});
-		const preferencesHeader = new Setting(preferencesSection)
-			.setName(this.t("preferences"))
-			.setDesc(this.t("preferencesDesc"))
-			.setHeading();
-		preferencesHeader.settingEl.addClass("tag-to-page-settings__section-header");
-
-		const languageSetting = new Setting(preferencesSection)
-			.setName(this.t("language"))
-			.setDesc(this.t("languageDesc"))
-			.addDropdown((dropdown) =>
-				dropdown
-					.addOption("zh", "中文")
-					.addOption("en", "English")
-					.setValue(this.plugin.settings.language)
-					.onChange((value) => this.setLanguage(value)),
-			);
-		languageSetting.settingEl.addClass("tag-to-page-settings__setting");
-
-		const behaviorSection = containerEl.createDiv({
-			cls: "tag-to-page-settings__section",
-		});
-		const behaviorHeader = new Setting(behaviorSection)
-			.setName(this.t("behavior"))
-			.setDesc(this.t("behaviorDesc"))
-			.setHeading();
-		behaviorHeader.settingEl.addClass("tag-to-page-settings__section-header");
-
-		const autocompleteSetting = new Setting(behaviorSection)
-			.setName(this.t("autocompleteName"))
-			.setDesc(this.t("autocompleteDesc"))
-			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.autocompleteOn)
-					.onChange((value) => this.setAutocompleteEnabled(value)),
-			);
-		autocompleteSetting.settingEl.addClass("tag-to-page-settings__setting");
-
-		const notice = behaviorSection.createDiv({
-			cls: "tag-to-page-settings__notice",
-		});
-		notice.createDiv({
-			cls: "tag-to-page-settings__notice-title",
-			text: this.t("autocompleteNotice"),
-		});
-		notice.createDiv({
-			cls: "tag-to-page-settings__notice-text",
-			text: this.t("autocompleteNoticeDesc"),
-		});
 	}
 }
