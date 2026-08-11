@@ -10,6 +10,10 @@
 
 Obsdian Tag to Page 会把标签点击从默认的标签搜索行为改为页面导航。目标页面不存在时，它还可以自动创建对应的 Markdown 笔记。
 
+## 🎬 演示动画
+
+![Tag to Page 演示动画](assets/tag-to-page-demo.gif)
+
 ## ✨ 主要功能
 
 - **点击 `#tag` 打开页面** — 支持阅读视图和实时预览。

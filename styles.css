@@ -1,3 +1,16 @@
+/* Tag to Page editor completion */
+
+.tag-to-page-completion-tooltip {
+	margin-top: var(--tag-to-page-native-offset, 0);
+}
+
+.tag-to-page-completion-tooltip > ul {
+	max-height: min(
+		20em,
+		var(--tag-to-page-completion-max-height, 20em)
+	);
+}
+
 /* Tag to Page settings */
 
 .tag-to-page-settings {

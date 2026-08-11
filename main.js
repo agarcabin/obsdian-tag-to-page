@@ -28,6 +28,7 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 var import_autocomplete = require("@codemirror/autocomplete");
+var import_view = require("@codemirror/view");
 var LANG = {
   zh: {
     settingHeader: "Tag to Page",
@@ -82,6 +83,152 @@ var DEFAULT_SETTINGS = {
 var TAG_COMPLETION_PATTERN = new RegExp(
   String.raw`#[-\p{L}\p{N}\p{Script=Han}_/]*$`,
   "u"
+);
+var COMPLETION_TOOLTIP_CLASS = "tag-to-page-completion-tooltip";
+var COMPLETION_TOOLTIP_GAP = 8;
+var COMPLETION_TOOLTIP_EDGE_GAP = 8;
+var COMPLETION_TOOLTIP_MIN_HEIGHT = 96;
+function isVisibleElement(element) {
+  var _a;
+  const rect = element.getBoundingClientRect();
+  const style = (_a = element.ownerDocument.defaultView) == null ? void 0 : _a.getComputedStyle(element);
+  return rect.width > 0 && rect.height > 0 && (style == null ? void 0 : style.display) !== "none" && (style == null ? void 0 : style.visibility) !== "hidden";
+}
+function distanceToRect(x, y, rect) {
+  const dx = Math.max(rect.left - x, 0, x - rect.right);
+  const dy = Math.max(rect.top - y, 0, y - rect.bottom);
+  return Math.hypot(dx, dy);
+}
+var CompletionTooltipPositioner = class {
+  constructor(view) {
+    this.view = view;
+    this.animationFrame = null;
+    this.schedule = () => {
+      if (this.animationFrame !== null)
+        return;
+      this.animationFrame = this.win.requestAnimationFrame(() => {
+        this.animationFrame = null;
+        this.positionTooltip();
+      });
+    };
+    var _a;
+    this.doc = view.dom.ownerDocument;
+    this.win = (_a = this.doc.defaultView) != null ? _a : window;
+    this.observer = new MutationObserver((mutations) => {
+      if (mutations.some(
+        (mutation) => mutation.type === "childList" || mutation.target.nodeType === 1 && mutation.target.matches(
+          ".suggestion-container"
+        )
+      )) {
+        this.schedule();
+      }
+    });
+    this.observer.observe(this.doc.body, {
+      attributes: true,
+      attributeFilter: ["class", "style"],
+      childList: true,
+      subtree: true
+    });
+    this.win.addEventListener("resize", this.schedule);
+    this.doc.addEventListener("scroll", this.schedule, true);
+    this.schedule();
+  }
+  update(update) {
+    if (update.docChanged || update.selectionSet || update.viewportChanged || update.geometryChanged || update.focusChanged) {
+      this.schedule();
+    }
+  }
+  destroy() {
+    this.observer.disconnect();
+    this.win.removeEventListener("resize", this.schedule);
+    this.doc.removeEventListener("scroll", this.schedule, true);
+    if (this.animationFrame !== null) {
+      this.win.cancelAnimationFrame(this.animationFrame);
+    }
+  }
+  findTooltip() {
+    var _a;
+    const localTooltip = this.view.dom.querySelector(
+      `.${COMPLETION_TOOLTIP_CLASS}`
+    );
+    if (localTooltip)
+      return localTooltip;
+    if (!this.view.hasFocus)
+      return null;
+    const cursor = this.view.coordsAtPos(this.view.state.selection.main.head);
+    if (!cursor)
+      return null;
+    const candidates = Array.from(
+      this.doc.querySelectorAll(`.${COMPLETION_TOOLTIP_CLASS}`)
+    ).filter(isVisibleElement);
+    return (_a = candidates.sort(
+      (a, b) => distanceToRect(cursor.left, cursor.bottom, a.getBoundingClientRect()) - distanceToRect(cursor.left, cursor.bottom, b.getBoundingClientRect())
+    )[0]) != null ? _a : null;
+  }
+  findNativeSuggestion(tooltip) {
+    if (!this.view.hasFocus)
+      return null;
+    const cursor = this.view.coordsAtPos(this.view.state.selection.main.head);
+    if (!cursor)
+      return null;
+    const candidates = Array.from(
+      this.doc.querySelectorAll(".suggestion-container")
+    ).filter(isVisibleElement);
+    const nearest = candidates.sort(
+      (a, b) => distanceToRect(cursor.left, cursor.bottom, a.getBoundingClientRect()) - distanceToRect(cursor.left, cursor.bottom, b.getBoundingClientRect())
+    )[0];
+    if (!nearest)
+      return null;
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const nativeRect = nearest.getBoundingClientRect();
+    const proximityLimit = Math.max(320, Math.min(this.win.innerWidth * 0.4, 520));
+    const closeToCursor = distanceToRect(cursor.left, cursor.bottom, nativeRect) <= proximityLimit;
+    const closeToTooltip = distanceToRect(tooltipRect.left, tooltipRect.top, nativeRect) <= proximityLimit;
+    return closeToCursor && closeToTooltip ? nearest : null;
+  }
+  positionTooltip() {
+    const tooltip = this.findTooltip();
+    if (!tooltip)
+      return;
+    const nativeSuggestion = this.findNativeSuggestion(tooltip);
+    if (!nativeSuggestion) {
+      tooltip.style.removeProperty("--tag-to-page-native-offset");
+      tooltip.style.removeProperty("--tag-to-page-completion-max-height");
+      return;
+    }
+    const currentOffset = Number.parseFloat(
+      tooltip.style.getPropertyValue("--tag-to-page-native-offset")
+    ) || 0;
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const nativeRect = nativeSuggestion.getBoundingClientRect();
+    const baseTop = tooltipRect.top - currentOffset;
+    const belowTop = nativeRect.bottom + COMPLETION_TOOLTIP_GAP;
+    const spaceBelow = this.win.innerHeight - belowTop - COMPLETION_TOOLTIP_EDGE_GAP;
+    let desiredTop = belowTop;
+    let maxHeight = spaceBelow;
+    if (spaceBelow < COMPLETION_TOOLTIP_MIN_HEIGHT) {
+      const aboveBottom = nativeRect.top - COMPLETION_TOOLTIP_GAP;
+      const spaceAbove = aboveBottom - COMPLETION_TOOLTIP_EDGE_GAP;
+      if (spaceAbove > spaceBelow) {
+        maxHeight = spaceAbove;
+        desiredTop = Math.max(
+          COMPLETION_TOOLTIP_EDGE_GAP,
+          aboveBottom - Math.min(tooltipRect.height, spaceAbove)
+        );
+      }
+    }
+    tooltip.style.setProperty(
+      "--tag-to-page-native-offset",
+      `${Math.round(desiredTop - baseTop)}px`
+    );
+    tooltip.style.setProperty(
+      "--tag-to-page-completion-max-height",
+      `${Math.max(72, Math.floor(maxHeight))}px`
+    );
+  }
+};
+var completionTooltipPositioner = import_view.ViewPlugin.fromClass(
+  CompletionTooltipPositioner
 );
 function isRecord(value) {
   return typeof value === "object" && value !== null;
@@ -279,11 +426,13 @@ var TagToPagePlugin = class extends import_obsidian.Plugin {
   }
   // ── # autocomplete ──
   registerAutocompleteOverride() {
-    this.registerEditorExtension(
+    this.registerEditorExtension([
       (0, import_autocomplete.autocompletion)({
-        override: [this.getPageCompletion.bind(this)]
-      })
-    );
+        override: [this.getPageCompletion.bind(this)],
+        tooltipClass: () => COMPLETION_TOOLTIP_CLASS
+      }),
+      completionTooltipPositioner
+    ]);
   }
   getPageCompletion(context) {
     const match = context.matchBefore(TAG_COMPLETION_PATTERN);

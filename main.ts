@@ -11,6 +11,7 @@ import {
 	CompletionContext,
 	CompletionResult,
 } from "@codemirror/autocomplete";
+import { EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 
 // ────────────────────────── i18n ──────────────────────────
 
@@ -105,6 +106,191 @@ const DEFAULT_SETTINGS: TagToPageSettings = {
 const TAG_COMPLETION_PATTERN = new RegExp(
 	String.raw`#[-\p{L}\p{N}\p{Script=Han}_/]*$`,
 	"u",
+);
+const COMPLETION_TOOLTIP_CLASS = "tag-to-page-completion-tooltip";
+const COMPLETION_TOOLTIP_GAP = 8;
+const COMPLETION_TOOLTIP_EDGE_GAP = 8;
+const COMPLETION_TOOLTIP_MIN_HEIGHT = 96;
+
+function isVisibleElement(element: HTMLElement): boolean {
+	const rect = element.getBoundingClientRect();
+	const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+	return (
+		rect.width > 0 &&
+		rect.height > 0 &&
+		style?.display !== "none" &&
+		style?.visibility !== "hidden"
+	);
+}
+
+function distanceToRect(
+	x: number,
+	y: number,
+	rect: DOMRect,
+): number {
+	const dx = Math.max(rect.left - x, 0, x - rect.right);
+	const dy = Math.max(rect.top - y, 0, y - rect.bottom);
+	return Math.hypot(dx, dy);
+}
+
+class CompletionTooltipPositioner {
+	private animationFrame: number | null = null;
+	private readonly doc: Document;
+	private readonly win: Window;
+	private readonly observer: MutationObserver;
+
+	constructor(private readonly view: EditorView) {
+		this.doc = view.dom.ownerDocument;
+		this.win = this.doc.defaultView ?? window;
+		this.observer = new MutationObserver((mutations) => {
+			if (
+				mutations.some(
+					(mutation) =>
+						mutation.type === "childList" ||
+						(mutation.target.nodeType === 1 &&
+							(mutation.target as Element).matches(
+								".suggestion-container",
+							)),
+				)
+			) {
+				this.schedule();
+			}
+		});
+
+		this.observer.observe(this.doc.body, {
+			attributes: true,
+			attributeFilter: ["class", "style"],
+			childList: true,
+			subtree: true,
+		});
+		this.win.addEventListener("resize", this.schedule);
+		this.doc.addEventListener("scroll", this.schedule, true);
+		this.schedule();
+	}
+
+	update(update: ViewUpdate) {
+		if (
+			update.docChanged ||
+			update.selectionSet ||
+			update.viewportChanged ||
+			update.geometryChanged ||
+			update.focusChanged
+		) {
+			this.schedule();
+		}
+	}
+
+	destroy() {
+		this.observer.disconnect();
+		this.win.removeEventListener("resize", this.schedule);
+		this.doc.removeEventListener("scroll", this.schedule, true);
+		if (this.animationFrame !== null) {
+			this.win.cancelAnimationFrame(this.animationFrame);
+		}
+	}
+
+	private readonly schedule = () => {
+		if (this.animationFrame !== null) return;
+		this.animationFrame = this.win.requestAnimationFrame(() => {
+			this.animationFrame = null;
+			this.positionTooltip();
+		});
+	};
+
+	private findTooltip(): HTMLElement | null {
+		const localTooltip = this.view.dom.querySelector<HTMLElement>(
+			`.${COMPLETION_TOOLTIP_CLASS}`,
+		);
+		if (localTooltip) return localTooltip;
+		if (!this.view.hasFocus) return null;
+
+		const cursor = this.view.coordsAtPos(this.view.state.selection.main.head);
+		if (!cursor) return null;
+		const candidates = Array.from(
+			this.doc.querySelectorAll<HTMLElement>(`.${COMPLETION_TOOLTIP_CLASS}`),
+		).filter(isVisibleElement);
+		return (
+			candidates.sort(
+				(a, b) =>
+					distanceToRect(cursor.left, cursor.bottom, a.getBoundingClientRect()) -
+					distanceToRect(cursor.left, cursor.bottom, b.getBoundingClientRect()),
+			)[0] ?? null
+		);
+	}
+
+	private findNativeSuggestion(tooltip: HTMLElement): HTMLElement | null {
+		if (!this.view.hasFocus) return null;
+		const cursor = this.view.coordsAtPos(this.view.state.selection.main.head);
+		if (!cursor) return null;
+
+		const candidates = Array.from(
+			this.doc.querySelectorAll<HTMLElement>(".suggestion-container"),
+		).filter(isVisibleElement);
+		const nearest = candidates.sort(
+			(a, b) =>
+				distanceToRect(cursor.left, cursor.bottom, a.getBoundingClientRect()) -
+				distanceToRect(cursor.left, cursor.bottom, b.getBoundingClientRect()),
+		)[0];
+		if (!nearest) return null;
+
+		const tooltipRect = tooltip.getBoundingClientRect();
+		const nativeRect = nearest.getBoundingClientRect();
+		const proximityLimit = Math.max(320, Math.min(this.win.innerWidth * 0.4, 520));
+		const closeToCursor =
+			distanceToRect(cursor.left, cursor.bottom, nativeRect) <= proximityLimit;
+		const closeToTooltip =
+			distanceToRect(tooltipRect.left, tooltipRect.top, nativeRect) <=
+			proximityLimit;
+		return closeToCursor && closeToTooltip ? nearest : null;
+	}
+
+	private positionTooltip() {
+		const tooltip = this.findTooltip();
+		if (!tooltip) return;
+		const nativeSuggestion = this.findNativeSuggestion(tooltip);
+		if (!nativeSuggestion) {
+			tooltip.style.removeProperty("--tag-to-page-native-offset");
+			tooltip.style.removeProperty("--tag-to-page-completion-max-height");
+			return;
+		}
+
+		const currentOffset = Number.parseFloat(
+			tooltip.style.getPropertyValue("--tag-to-page-native-offset"),
+		) || 0;
+		const tooltipRect = tooltip.getBoundingClientRect();
+		const nativeRect = nativeSuggestion.getBoundingClientRect();
+		const baseTop = tooltipRect.top - currentOffset;
+		const belowTop = nativeRect.bottom + COMPLETION_TOOLTIP_GAP;
+		const spaceBelow =
+			this.win.innerHeight - belowTop - COMPLETION_TOOLTIP_EDGE_GAP;
+
+		let desiredTop = belowTop;
+		let maxHeight = spaceBelow;
+		if (spaceBelow < COMPLETION_TOOLTIP_MIN_HEIGHT) {
+			const aboveBottom = nativeRect.top - COMPLETION_TOOLTIP_GAP;
+			const spaceAbove = aboveBottom - COMPLETION_TOOLTIP_EDGE_GAP;
+			if (spaceAbove > spaceBelow) {
+				maxHeight = spaceAbove;
+				desiredTop = Math.max(
+					COMPLETION_TOOLTIP_EDGE_GAP,
+					aboveBottom - Math.min(tooltipRect.height, spaceAbove),
+				);
+			}
+		}
+
+		tooltip.style.setProperty(
+			"--tag-to-page-native-offset",
+			`${Math.round(desiredTop - baseTop)}px`,
+		);
+		tooltip.style.setProperty(
+			"--tag-to-page-completion-max-height",
+			`${Math.max(72, Math.floor(maxHeight))}px`,
+		);
+	}
+}
+
+const completionTooltipPositioner = ViewPlugin.fromClass(
+	CompletionTooltipPositioner,
 );
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -328,11 +514,13 @@ export default class TagToPagePlugin extends Plugin {
 	// ── # autocomplete ──
 
 	private registerAutocompleteOverride() {
-		this.registerEditorExtension(
+		this.registerEditorExtension([
 			autocompletion({
 				override: [this.getPageCompletion.bind(this)],
+				tooltipClass: () => COMPLETION_TOOLTIP_CLASS,
 			}),
-		);
+			completionTooltipPositioner,
+		]);
 	}
 
 	private getPageCompletion(
