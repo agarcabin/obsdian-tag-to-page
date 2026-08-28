@@ -22,6 +22,7 @@ Obsdian Tag to Page 会把标签点击从默认的标签搜索行为改为页面
 - **支持嵌套标签** — `#parent/child` 会按需创建 `parent/child.md` 及父目录。
 - **在新窗格打开** — Windows/Linux 按住 `Ctrl`，macOS 按住 `Cmd` 后点击。
 - **可选页面补全** — 输入 `#` 时，从笔记名和别名中提供补全建议。
+- **标签反链归类** — 解析到当前页面的 `#标签` 会显示在反链的“链接当前文件”列表中，并从“提到当前文件名”中移除对应标签片段。
 - **双语和响应式设置** — 支持中文/English，并适配窄窗口和移动端。
 
 **一句话总结** — 把标签从“搜索入口”变成“页面入口”，更接近 Logseq 的笔记流。
@@ -42,6 +43,7 @@ Obsdian Tag to Page 会把标签点击从默认的标签搜索行为改为页面
 | 设置项 | 说明 |
 | --- | --- |
 | 语言 | 在中文和 English 之间切换设置界面。 |
+| 在反链中显示标签 | 控制相关 `#标签` 是否显示在“链接当前文件”列表中。 |
 | 输入 `#` 时显示页面补全 | 根据笔记名和别名提供补全建议，可能增加一些扫描开销。 |
 
 ## 📦 安装
@@ -68,6 +70,7 @@ Obsdian Tag to Page 会把标签点击从默认的标签搜索行为改为页面
 
 - 开启 `#` 页面补全后，会替换默认的 `[[` 页面补全提供器。
 - 源码模式暂不支持标签点击跳转。
+- 标签反链归类使用 Obsidian 当前版本的反链内部渲染结构；如果结构不可用，插件会跳过该功能，不影响标签点击跳转。
 
 ## 🛠️ 从源码构建
 
@@ -103,6 +106,7 @@ Obsdian Tag to Page changes tag clicks from Obsidian's default tag-search behavi
 - **Support nested tags** — `#parent/child` creates `parent/child.md` and its parent directory when needed.
 - **Open in a new pane** — Hold `Ctrl` on Windows/Linux or `Cmd` on macOS while clicking.
 - **Optional page completion** — Type `#` to search note names and aliases for suggestions.
+- **Classify tag backlinks** — `#tags` that resolve to the current page appear in the linked-backlinks list, and the matching tag ranges are removed from unlinked mentions.
 - **Bilingual, responsive settings** — Switch between Chinese and English in a layout that also works on narrow windows and mobile.
 
 **TL;DR** — Turn tags from search triggers into page links for a more Logseq-like note flow.
@@ -123,6 +127,7 @@ When page completion is enabled, CodeMirror 6 autocomplete suggests Markdown not
 | Setting | Description |
 | --- | --- |
 | Language | Switch the settings UI between Chinese and English. |
+| Show tags in backlinks | Control whether related `#tags` appear in the linked-backlinks list. |
 | Show page completion when typing `#` | Suggest matching note names and aliases; this may add some scanning overhead. |
 
 ## 📦 Install
@@ -149,6 +154,7 @@ Enable **Tag to Page** under **Settings → Community plugins**.
 
 - Enabling `#` page completion replaces the default `[[` page completion provider.
 - Tag clicks are not supported in Source mode.
+- Tag-backlink classification uses Obsidian's current internal backlink rendering structure; if it is unavailable, the plugin skips this feature without affecting tag-to-page navigation.
 
 ## 🛠️ Build from source
 

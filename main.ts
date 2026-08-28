@@ -5,7 +5,12 @@
 	Plugin,
 	PluginSettingTab,
 } from "obsidian";
-import type { SettingDefinitionItem, TFile, WorkspaceLeaf } from "obsidian";
+import type {
+	SettingDefinitionItem,
+	TagCache,
+	TFile,
+	WorkspaceLeaf,
+} from "obsidian";
 import {
 	autocompletion,
 	CompletionContext,
@@ -21,6 +26,7 @@ type MissingPageAction = "create" | "openTag" | "edit" | "none";
 type SettingKey =
 	| "language"
 	| "clickToPage"
+	| "tagBacklinksOn"
 	| "missingPageAction"
 	| "autocompleteOn"
 	| "autocompleteAliases";
@@ -37,6 +43,9 @@ const LANG: Record<Lang, Record<string, string>> = {
 		clickToPageName: "点击标签跳转到同名页面",
 		clickToPageDesc:
 			"点击 #标签 时打开同名页面，类似Logseq的标签浏览体验。",
+		tagBacklinksName: "在反链中显示标签",
+		tagBacklinksDesc:
+			"将解析到当前页面的 #标签 显示在“链接当前文件”中，而不是“提到当前文件名”。",
 		missingPageActionName: "页面不存在时动作",
 		missingPageActionDesc: "选择标签没有同名页面时执行的操作。",
 		missingPageActionCreate: "自动创建同名页面",
@@ -63,6 +72,9 @@ const LANG: Record<Lang, Record<string, string>> = {
 		clickToPageName: "Open the same-name page when clicking a tag",
 		clickToPageDesc:
 			"Click #tag to open the page with the same name for a Logseq-like tag browsing experience.",
+		tagBacklinksName: "Show tags in backlinks",
+		tagBacklinksDesc:
+			"Show #tags that resolve to the current page in “Linked backlinks” instead of “Unlinked mentions”.",
 		missingPageActionName: "When the page does not exist",
 		missingPageActionDesc:
 			"Choose what happens when a tag has no page with the same name.",
@@ -84,6 +96,7 @@ const LANG: Record<Lang, Record<string, string>> = {
 
 interface TagToPageSettings {
 	clickToPage: boolean;
+	tagBacklinksOn: boolean;
 	missingPageAction: MissingPageAction;
 	autocompleteOn: boolean;
 	autocompleteAliases: boolean;
@@ -95,8 +108,62 @@ interface PluginManager {
 	enablePlugin(id: string): Promise<void>;
 }
 
+type TextRange = [number, number];
+
+interface TagSource {
+	file: TFile;
+	tags: TagCache[];
+}
+
+interface TagBacklinkMatch {
+	file: TFile;
+	ranges: TextRange[];
+}
+
+interface NativeSearchResult {
+	[key: string]: unknown;
+	content?: unknown;
+	properties?: unknown;
+}
+
+interface NativeSearchResultItem {
+	[key: string]: unknown;
+	content?: string;
+	el?: HTMLElement;
+	result?: NativeSearchResult;
+}
+
+interface NativeSearchResultDom {
+	addResult(
+		file: TFile,
+		result: NativeSearchResult,
+		content: string,
+		showTitle?: boolean,
+	): unknown;
+	removeResult(file: TFile): unknown;
+	getResult(file: TFile): NativeSearchResultItem | null | undefined;
+	getMatchCount(): number;
+}
+
+interface NativeBacklinkController {
+	[key: string]: unknown;
+	backlinkDom?: NativeSearchResultDom;
+	unlinkedDom?: NativeSearchResultDom;
+}
+
+interface BacklinkControllerCandidate {
+	controller: NativeBacklinkController;
+	fallbackFile: TFile | null;
+}
+
+interface AppliedTagBacklinks {
+	targetPath: string;
+	rangesByPath: Map<string, TextRange[]>;
+}
+
 const DEFAULT_SETTINGS: TagToPageSettings = {
 	clickToPage: true,
+	tagBacklinksOn: true,
 	missingPageAction: "create",
 	autocompleteOn: false,
 	autocompleteAliases: true,
@@ -111,6 +178,8 @@ const COMPLETION_TOOLTIP_CLASS = "tag-to-page-completion-tooltip";
 const COMPLETION_TOOLTIP_GAP = 8;
 const COMPLETION_TOOLTIP_EDGE_GAP = 8;
 const COMPLETION_TOOLTIP_MIN_HEIGHT = 96;
+const TAG_BACKLINK_RESULT_CLASS = "tag-to-page-tag-backlink";
+const BACKLINK_SYNC_DELAY = 160;
 
 function isVisibleElement(element: HTMLElement): boolean {
 	const rect = element.getBoundingClientRect();
@@ -313,6 +382,99 @@ function frontmatterAliases(frontmatter: unknown): string[] {
 	];
 }
 
+function normalizeTagName(value: string): string {
+	return value.trim().replace(/^#/, "").toLowerCase();
+}
+
+function asMarkdownFile(value: unknown): TFile | null {
+	if (!isRecord(value)) return null;
+	return typeof value.path === "string" &&
+		typeof value.basename === "string" &&
+		value.extension === "md"
+		? (value as unknown as TFile)
+		: null;
+}
+
+function asNativeSearchResultDom(value: unknown): NativeSearchResultDom | null {
+	if (!isRecord(value)) return null;
+	return typeof value.addResult === "function" &&
+		typeof value.removeResult === "function" &&
+		typeof value.getResult === "function" &&
+		typeof value.getMatchCount === "function"
+		? (value as unknown as NativeSearchResultDom)
+		: null;
+}
+
+function getObjectProperty(value: unknown, key: string): unknown {
+	if (!isRecord(value)) return undefined;
+	try {
+		return value[key];
+	} catch {
+		return undefined;
+	}
+}
+
+function textRanges(value: unknown): TextRange[] {
+	if (!Array.isArray(value)) return [];
+
+	const ranges: TextRange[] = [];
+	for (const item of value) {
+		if (!Array.isArray(item) || item.length < 2) continue;
+		const start = item[0];
+		const end = item[1];
+		if (
+			typeof start !== "number" ||
+			typeof end !== "number" ||
+			!Number.isFinite(start) ||
+			!Number.isFinite(end) ||
+			end <= start
+		) {
+			continue;
+		}
+		ranges.push([start, end]);
+	}
+
+	return ranges;
+}
+
+function uniqueTextRanges(ranges: TextRange[]): TextRange[] {
+	const seen = new Set<string>();
+	const unique: TextRange[] = [];
+	for (const [start, end] of ranges) {
+		const key = `${start}:${end}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		unique.push([start, end]);
+	}
+	return unique.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+
+function sameTextRanges(left: TextRange[], right: TextRange[]): boolean {
+	const a = uniqueTextRanges(left);
+	const b = uniqueTextRanges(right);
+	if (a.length !== b.length) return false;
+	return a.every(([start, end], index) => {
+		const other = b[index];
+		return other !== undefined && start === other[0] && end === other[1];
+	});
+}
+
+function rangesOverlap(left: TextRange, right: TextRange): boolean {
+	return left[0] < right[1] && right[0] < left[1];
+}
+
+function hasNativePropertyMatches(result: NativeSearchResult): boolean {
+	return Array.isArray(result.properties) && result.properties.length > 0;
+}
+
+function nativeResultItem(value: unknown): NativeSearchResultItem | null {
+	if (!isRecord(value)) return null;
+	const result = getObjectProperty(value, "result");
+	return isRecord(result)
+		? (value as unknown as NativeSearchResultItem)
+		: null;
+}
+
 function resolveLanguage(preference: LanguagePreference): Lang {
 	if (preference !== "auto") return preference;
 	const systemLanguage = activeWindow.navigator.language.toLowerCase();
@@ -324,8 +486,21 @@ function resolveLanguage(preference: LanguagePreference): Lang {
 export default class TagToPagePlugin extends Plugin {
 	settings: TagToPageSettings;
 
+	private tagSources: TagSource[] = [];
+	private aliasTargets = new Map<string, TFile[]>();
+	private tagIndexDirty = true;
+	private backlinkSyncTimer: number | null = null;
+	private backlinkSyncInProgress = false;
+	private backlinkSyncRequested = false;
+	private appliedTagBacklinks = new WeakMap<
+		object,
+		AppliedTagBacklinks
+	>();
+	private backlinkIntegrationErrorReported = false;
+
 	async onload() {
 		await this.loadSettings();
+		this.registerBacklinkIntegration();
 
 		this.registerDomEvent(
 			document,
@@ -349,6 +524,582 @@ export default class TagToPagePlugin extends Plugin {
 		}
 
 		this.addSettingTab(new TagToPageSettingTab(this.app, this));
+	}
+
+	// ── tag backlinks ──
+
+	private registerBacklinkIntegration() {
+		const markIndexDirty = () => {
+			this.tagIndexDirty = true;
+			this.scheduleBacklinkSync();
+		};
+
+		this.registerEvent(
+			this.app.metadataCache.on("changed", markIndexDirty, this),
+		);
+		this.registerEvent(
+			this.app.metadataCache.on("resolve", markIndexDirty, this),
+		);
+		this.registerEvent(
+			this.app.metadataCache.on("deleted", markIndexDirty, this),
+		);
+		this.registerEvent(this.app.vault.on("create", markIndexDirty, this));
+		this.registerEvent(this.app.vault.on("rename", markIndexDirty, this));
+		this.registerEvent(this.app.vault.on("delete", markIndexDirty, this));
+		this.registerEvent(
+			this.app.workspace.on(
+				"active-leaf-change",
+				() => this.scheduleBacklinkSync(),
+				this,
+			),
+		);
+		this.registerEvent(
+			this.app.workspace.on(
+				"file-open",
+				() => this.scheduleBacklinkSync(),
+				this,
+			),
+		);
+		this.registerEvent(
+			this.app.workspace.on(
+				"layout-change",
+				() => this.scheduleBacklinkSync(),
+				this,
+			),
+		);
+
+		const backlinkSelector =
+			".backlink-pane, .workspace-leaf-content[data-type='backlink']";
+		const observer = new MutationObserver((mutations) => {
+			const backlinkChanged = mutations.some((mutation) => {
+				if (
+					mutation.target instanceof Element &&
+					mutation.target.closest(backlinkSelector)
+				) {
+					return true;
+				}
+
+				return [
+					...Array.from(mutation.addedNodes),
+					...Array.from(mutation.removedNodes),
+				].some(
+					(node) =>
+						node instanceof Element &&
+						(node.matches(backlinkSelector) ||
+							node.querySelector(backlinkSelector)),
+				);
+			});
+			if (backlinkChanged) this.scheduleBacklinkSync();
+		});
+		if (document.body) {
+			observer.observe(document.body, {
+				childList: true,
+				subtree: true,
+			});
+		}
+		this.register(() => {
+			observer.disconnect();
+			if (this.backlinkSyncTimer !== null) {
+				window.clearTimeout(this.backlinkSyncTimer);
+				this.backlinkSyncTimer = null;
+			}
+		});
+
+		this.scheduleBacklinkSync(400);
+	}
+
+	private scheduleBacklinkSync(delay = BACKLINK_SYNC_DELAY) {
+		if (this.backlinkSyncTimer !== null) {
+			window.clearTimeout(this.backlinkSyncTimer);
+		}
+
+		this.backlinkSyncTimer = window.setTimeout(() => {
+			this.backlinkSyncTimer = null;
+			if (this.backlinkSyncInProgress) {
+				this.backlinkSyncRequested = true;
+				return;
+			}
+			void this.syncBacklinkViews();
+		}, delay);
+	}
+
+	async setTagBacklinksEnabled(enabled: boolean) {
+		this.settings.tagBacklinksOn = enabled;
+		await this.saveSettings();
+		this.scheduleBacklinkSync(0);
+	}
+
+	private rebuildTagIndex() {
+		this.tagSources = [];
+		this.aliasTargets.clear();
+
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			const cache = this.app.metadataCache.getFileCache(file);
+			const tags = cache?.tags ?? [];
+			if (tags.length > 0) this.tagSources.push({ file, tags });
+
+			for (const alias of frontmatterAliases(cache?.frontmatter)) {
+				const key = normalizeTagName(alias);
+				if (!key) continue;
+				const targets = this.aliasTargets.get(key) ?? [];
+				if (!targets.some((target) => target.path === file.path)) {
+					targets.push(file);
+				}
+				this.aliasTargets.set(key, targets);
+			}
+		}
+
+		this.tagIndexDirty = false;
+	}
+
+	private getTagBacklinkMatches(target: TFile): TagBacklinkMatch[] {
+		if (this.tagIndexDirty) this.rebuildTagIndex();
+
+		const matches = new Map<string, TagBacklinkMatch>();
+		for (const source of this.tagSources) {
+			if (source.file.path === target.path) continue;
+
+			const ranges: TextRange[] = [];
+			for (const tag of source.tags) {
+				if (!this.tagPointsToFile(tag, source.file, target)) continue;
+				const start = tag.position.start.offset;
+				const end = tag.position.end.offset;
+				if (
+					typeof start === "number" &&
+					typeof end === "number" &&
+					Number.isFinite(start) &&
+					Number.isFinite(end) &&
+					end > start
+				) {
+					ranges.push([start, end]);
+				}
+			}
+
+			if (ranges.length > 0) {
+				matches.set(source.file.path, {
+					file: source.file,
+					ranges: uniqueTextRanges(ranges),
+				});
+			}
+		}
+
+		return Array.from(matches.values());
+	}
+
+	private tagPointsToFile(
+		tag: TagCache,
+		source: TFile,
+		target: TFile,
+	): boolean {
+		const tagName = normalizeTagName(tag.tag);
+		if (!tagName) return false;
+
+		try {
+			const resolved = this.app.metadataCache.getFirstLinkpathDest(
+				tagName,
+				source.path,
+			);
+			if (resolved) return resolved.path === target.path;
+		} catch (err) {
+			console.warn("Tag to Page: failed to resolve tag backlink", err);
+		}
+
+		const aliasTargets = this.aliasTargets.get(tagName) ?? [];
+		return (
+			aliasTargets.length === 1 && aliasTargets[0]?.path === target.path
+		);
+	}
+
+	private findBacklinkControllers(): BacklinkControllerCandidate[] {
+		const candidates: BacklinkControllerCandidate[] = [];
+		const seen = new Set<object>();
+
+		for (const viewType of ["backlink", "markdown"]) {
+			for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
+				this.collectBacklinkControllers(
+					leaf.view,
+					3,
+					seen,
+					candidates,
+					null,
+				);
+			}
+		}
+
+		return candidates;
+	}
+
+	private collectBacklinkControllers(
+		value: unknown,
+		depth: number,
+		seen: Set<object>,
+		candidates: BacklinkControllerCandidate[],
+		fallbackFile: TFile | null,
+	) {
+		if (!isRecord(value) || seen.has(value)) return;
+		seen.add(value);
+
+		const ownFile = asMarkdownFile(getObjectProperty(value, "file"));
+		const currentFile = ownFile ?? fallbackFile;
+		const backlinkFile = asMarkdownFile(
+			getObjectProperty(value, "backlinkFile"),
+		);
+		const nextFallbackFile = currentFile ?? backlinkFile;
+		const backlinkDom = asNativeSearchResultDom(
+			getObjectProperty(value, "backlinkDom"),
+		);
+		if (
+			backlinkDom &&
+			!candidates.some((candidate) => candidate.controller === value)
+		) {
+			candidates.push({
+				controller: value as unknown as NativeBacklinkController,
+				fallbackFile: nextFallbackFile,
+			});
+		}
+
+		if (depth <= 0) return;
+
+		let propertyNames: string[] = [];
+		try {
+			propertyNames = Object.getOwnPropertyNames(value);
+		} catch {
+			return;
+		}
+
+		for (const propertyName of propertyNames) {
+			if (!/backlink|preview|mode|view/i.test(propertyName)) continue;
+			const child = getObjectProperty(value, propertyName);
+			if (child === value) continue;
+			this.collectBacklinkControllers(
+				child,
+				depth - 1,
+				seen,
+				candidates,
+				nextFallbackFile,
+			);
+		}
+	}
+
+	private getBacklinkTarget(
+		candidate: BacklinkControllerCandidate,
+	): TFile | null {
+		return (
+			candidate.fallbackFile ??
+			asMarkdownFile(getObjectProperty(candidate.controller, "file")) ??
+			asMarkdownFile(
+				getObjectProperty(candidate.controller, "backlinkFile"),
+			)
+		);
+	}
+
+	private async syncBacklinkViews() {
+		if (this.backlinkSyncInProgress) {
+			this.backlinkSyncRequested = true;
+			return;
+		}
+
+		this.backlinkSyncInProgress = true;
+		this.backlinkSyncRequested = false;
+		try {
+			if (!this.settings.tagBacklinksOn) {
+				await this.clearAppliedTagBacklinks();
+				return;
+			}
+
+			const contentCache = new Map<string, string>();
+			for (const candidate of this.findBacklinkControllers()) {
+				const target = this.getBacklinkTarget(candidate);
+				if (!target) continue;
+				try {
+					await this.syncBacklinkController(
+						candidate,
+						target,
+						contentCache,
+					);
+				} catch (err) {
+					if (!this.backlinkIntegrationErrorReported) {
+						this.backlinkIntegrationErrorReported = true;
+						console.warn(
+							"Tag to Page: native backlink integration is unavailable",
+							err,
+						);
+					}
+				}
+			}
+		} finally {
+			this.backlinkSyncInProgress = false;
+			if (this.backlinkSyncRequested) {
+				this.scheduleBacklinkSync();
+			}
+		}
+	}
+
+	private async clearAppliedTagBacklinks() {
+		const contentCache = new Map<string, string>();
+		for (const candidate of this.findBacklinkControllers()) {
+			const previous = this.appliedTagBacklinks.get(candidate.controller);
+			if (!previous) continue;
+
+			const target = this.getBacklinkTarget(candidate);
+			const sameTarget = target?.path === previous.targetPath;
+			const backlinkDom = asNativeSearchResultDom(
+				getObjectProperty(candidate.controller, "backlinkDom"),
+			);
+			const unlinkedDom = asNativeSearchResultDom(
+				getObjectProperty(candidate.controller, "unlinkedDom"),
+			);
+			if (!backlinkDom) {
+				this.appliedTagBacklinks.delete(candidate.controller);
+				continue;
+			}
+
+			let cleanupComplete = true;
+			for (const [path, ranges] of previous.rangesByPath) {
+				const file = asMarkdownFile(
+					this.app.vault.getAbstractFileByPath(path),
+				);
+				if (!file) continue;
+
+				let content: string;
+				try {
+					content = await this.readBacklinkContent(file, contentCache);
+				} catch (err) {
+					cleanupComplete = false;
+					console.warn(
+						"Tag to Page: failed to restore a tag backlink source",
+						err,
+					);
+					continue;
+				}
+
+				this.removeSyntheticRangesFromLinkedResult(
+					backlinkDom,
+					file,
+					ranges,
+				);
+				if (sameTarget && unlinkedDom) {
+					this.ensureUnlinkedTagResult(
+						unlinkedDom,
+						file,
+						ranges,
+						content,
+					);
+				}
+			}
+
+			if (cleanupComplete) {
+				this.appliedTagBacklinks.delete(candidate.controller);
+			}
+			this.updateNativeCount(
+				getObjectProperty(candidate.controller, "backlinkCountEl"),
+				backlinkDom.getMatchCount(),
+			);
+			if (unlinkedDom) {
+				this.updateNativeCount(
+					getObjectProperty(candidate.controller, "unlinkedCountEl"),
+					unlinkedDom.getMatchCount(),
+				);
+			}
+		}
+	}
+
+	private async syncBacklinkController(
+		candidate: BacklinkControllerCandidate,
+		target: TFile,
+		contentCache: Map<string, string>,
+	) {
+		const controller = candidate.controller;
+		const backlinkDom = asNativeSearchResultDom(
+			getObjectProperty(controller, "backlinkDom"),
+		);
+		if (!backlinkDom) return;
+		const unlinkedDom = asNativeSearchResultDom(
+			getObjectProperty(controller, "unlinkedDom"),
+		);
+		const matches = this.getTagBacklinkMatches(target);
+		const previous = this.appliedTagBacklinks.get(controller);
+		const sameTarget = previous?.targetPath === target.path;
+		const next: AppliedTagBacklinks = {
+			targetPath: target.path,
+			rangesByPath: new Map(),
+		};
+
+		for (const match of matches) {
+			let content: string;
+			const cachedContent = contentCache.get(match.file.path);
+			try {
+				content =
+					cachedContent ??
+					(await this.readBacklinkContent(match.file, contentCache));
+			} catch (err) {
+				console.warn(
+					"Tag to Page: failed to read a tag backlink source",
+					err,
+				);
+				continue;
+			}
+
+			const ranges = match.ranges.filter(
+				([start, end]) => start >= 0 && end <= content.length,
+			);
+			if (ranges.length === 0) continue;
+
+			next.rangesByPath.set(match.file.path, ranges);
+			this.ensureLinkedTagResult(
+				backlinkDom,
+				match.file,
+				ranges,
+				content,
+			);
+			if (unlinkedDom) {
+				this.removeRangesFromResult(
+					unlinkedDom,
+					match.file,
+					ranges,
+					content,
+				);
+			}
+		}
+
+		if (previous && sameTarget) {
+			for (const [path, ranges] of previous.rangesByPath) {
+				if (next.rangesByPath.has(path)) continue;
+				const file = asMarkdownFile(
+					this.app.vault.getAbstractFileByPath(path),
+				);
+				if (!file) continue;
+				this.removeSyntheticRangesFromLinkedResult(
+					backlinkDom,
+					file,
+					ranges,
+				);
+			}
+		}
+
+		this.appliedTagBacklinks.set(controller, next);
+		this.updateNativeCount(
+			getObjectProperty(controller, "backlinkCountEl"),
+			backlinkDom.getMatchCount(),
+		);
+		if (unlinkedDom) {
+			this.updateNativeCount(
+				getObjectProperty(controller, "unlinkedCountEl"),
+				unlinkedDom.getMatchCount(),
+			);
+		}
+	}
+
+	private async readBacklinkContent(
+		file: TFile,
+		contentCache: Map<string, string>,
+	): Promise<string> {
+		const cached = contentCache.get(file.path);
+		if (cached !== undefined) return cached;
+		const content = await this.app.vault.cachedRead(file);
+		contentCache.set(file.path, content);
+		return content;
+	}
+
+	private ensureLinkedTagResult(
+		dom: NativeSearchResultDom,
+		file: TFile,
+		tagRanges: TextRange[],
+		content: string,
+	) {
+		const item = nativeResultItem(dom.getResult(file));
+		const result = item?.result;
+		const currentRanges = textRanges(result?.content);
+		const mergedRanges = uniqueTextRanges([
+			...currentRanges,
+			...tagRanges,
+		]);
+
+		if (!sameTextRanges(currentRanges, mergedRanges)) {
+			dom.addResult(
+				file,
+				{ ...(result ?? {}), content: mergedRanges },
+				content,
+				true,
+			);
+		}
+
+		const updated = nativeResultItem(dom.getResult(file));
+		if (updated?.el instanceof HTMLElement) {
+			updated.el.classList.add(TAG_BACKLINK_RESULT_CLASS);
+		}
+	}
+
+	private ensureUnlinkedTagResult(
+		dom: NativeSearchResultDom,
+		file: TFile,
+		tagRanges: TextRange[],
+		content: string,
+	) {
+		const item = nativeResultItem(dom.getResult(file));
+		const result = item?.result;
+		const currentRanges = textRanges(result?.content);
+		const mergedRanges = uniqueTextRanges([
+			...currentRanges,
+			...tagRanges,
+		]);
+
+		if (!sameTextRanges(currentRanges, mergedRanges)) {
+			dom.addResult(
+				file,
+				{ ...(result ?? {}), content: mergedRanges },
+				content,
+				true,
+			);
+		}
+	}
+
+	private removeRangesFromResult(
+		dom: NativeSearchResultDom,
+		file: TFile,
+		rangesToRemove: TextRange[],
+		fallbackContent: string,
+	) {
+		const item = nativeResultItem(dom.getResult(file));
+		const result = item?.result;
+		if (!item || !result) return;
+
+		const currentRanges = textRanges(result.content);
+		const remainingRanges = currentRanges.filter(
+			(current) =>
+				!rangesToRemove.some((range) => rangesOverlap(current, range)),
+		);
+		if (sameTextRanges(currentRanges, remainingRanges)) return;
+
+		const content =
+			typeof item.content === "string" ? item.content : fallbackContent;
+		if (remainingRanges.length === 0 && !hasNativePropertyMatches(result)) {
+			dom.removeResult(file);
+			return;
+		}
+
+		dom.addResult(
+			file,
+			{ ...result, content: uniqueTextRanges(remainingRanges) },
+			content,
+			true,
+		);
+	}
+
+	private removeSyntheticRangesFromLinkedResult(
+		dom: NativeSearchResultDom,
+		file: TFile,
+		rangesToRemove: TextRange[],
+	) {
+		const item = nativeResultItem(dom.getResult(file));
+		if (!item?.el?.classList.contains(TAG_BACKLINK_RESULT_CLASS)) return;
+		this.removeRangesFromResult(dom, file, rangesToRemove, item.content ?? "");
+	}
+
+	private updateNativeCount(value: unknown, count: number) {
+		if (!(value instanceof HTMLElement)) return;
+		const next = String(count);
+		if (value.textContent !== next) value.textContent = next;
 	}
 
 	// ── click handler (Reading View + Live Preview) ──
@@ -609,6 +1360,7 @@ export default class TagToPagePlugin extends Plugin {
 		const storedMissingPageAction = stored.missingPageAction;
 		this.settings = {
 			clickToPage: stored.clickToPage !== false,
+			tagBacklinksOn: stored.tagBacklinksOn !== false,
 			missingPageAction:
 				storedMissingPageAction === "create" ||
 				storedMissingPageAction === "openTag" ||
@@ -717,6 +1469,11 @@ class TagToPageSettingTab extends PluginSettingTab {
 			return;
 		}
 
+		if (key === "tagBacklinksOn") {
+			await this.plugin.setTagBacklinksEnabled(value);
+			return;
+		}
+
 		if (key === "autocompleteAliases") {
 			this.plugin.settings.autocompleteAliases = value;
 			await this.plugin.saveSettings();
@@ -803,6 +1560,15 @@ class TagToPageSettingTab extends PluginSettingTab {
 							type: "toggle",
 							key: "clickToPage",
 							defaultValue: DEFAULT_SETTINGS.clickToPage,
+						},
+					},
+					{
+						name: this.t("tagBacklinksName"),
+						desc: this.t("tagBacklinksDesc"),
+						control: {
+							type: "toggle",
+							key: "tagBacklinksOn",
+							defaultValue: DEFAULT_SETTINGS.tagBacklinksOn,
 						},
 					},
 					{

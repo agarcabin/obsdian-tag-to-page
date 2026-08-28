@@ -39,6 +39,8 @@ var LANG = {
     languageAuto: "\u81EA\u52A8\uFF08\u8DDF\u968F\u7CFB\u7EDF\uFF09",
     clickToPageName: "\u70B9\u51FB\u6807\u7B7E\u8DF3\u8F6C\u5230\u540C\u540D\u9875\u9762",
     clickToPageDesc: "\u70B9\u51FB #\u6807\u7B7E \u65F6\u6253\u5F00\u540C\u540D\u9875\u9762\uFF0C\u7C7B\u4F3CLogseq\u7684\u6807\u7B7E\u6D4F\u89C8\u4F53\u9A8C\u3002",
+    tagBacklinksName: "\u5728\u53CD\u94FE\u4E2D\u663E\u793A\u6807\u7B7E",
+    tagBacklinksDesc: "\u5C06\u89E3\u6790\u5230\u5F53\u524D\u9875\u9762\u7684 #\u6807\u7B7E \u663E\u793A\u5728\u201C\u94FE\u63A5\u5F53\u524D\u6587\u4EF6\u201D\u4E2D\uFF0C\u800C\u4E0D\u662F\u201C\u63D0\u5230\u5F53\u524D\u6587\u4EF6\u540D\u201D\u3002",
     missingPageActionName: "\u9875\u9762\u4E0D\u5B58\u5728\u65F6\u52A8\u4F5C",
     missingPageActionDesc: "\u9009\u62E9\u6807\u7B7E\u6CA1\u6709\u540C\u540D\u9875\u9762\u65F6\u6267\u884C\u7684\u64CD\u4F5C\u3002",
     missingPageActionCreate: "\u81EA\u52A8\u521B\u5EFA\u540C\u540D\u9875\u9762",
@@ -60,6 +62,8 @@ var LANG = {
     languageAuto: "Auto (follow system)",
     clickToPageName: "Open the same-name page when clicking a tag",
     clickToPageDesc: "Click #tag to open the page with the same name for a Logseq-like tag browsing experience.",
+    tagBacklinksName: "Show tags in backlinks",
+    tagBacklinksDesc: "Show #tags that resolve to the current page in \u201CLinked backlinks\u201D instead of \u201CUnlinked mentions\u201D.",
     missingPageActionName: "When the page does not exist",
     missingPageActionDesc: "Choose what happens when a tag has no page with the same name.",
     missingPageActionCreate: "Create the same-name page",
@@ -75,6 +79,7 @@ var LANG = {
 };
 var DEFAULT_SETTINGS = {
   clickToPage: true,
+  tagBacklinksOn: true,
   missingPageAction: "create",
   autocompleteOn: false,
   autocompleteAliases: true,
@@ -88,6 +93,8 @@ var COMPLETION_TOOLTIP_CLASS = "tag-to-page-completion-tooltip";
 var COMPLETION_TOOLTIP_GAP = 8;
 var COMPLETION_TOOLTIP_EDGE_GAP = 8;
 var COMPLETION_TOOLTIP_MIN_HEIGHT = 96;
+var TAG_BACKLINK_RESULT_CLASS = "tag-to-page-tag-backlink";
+var BACKLINK_SYNC_DELAY = 160;
 function isVisibleElement(element) {
   var _a;
   const rect = element.getBoundingClientRect();
@@ -249,6 +256,78 @@ function frontmatterAliases(frontmatter) {
     ...stringValues(frontmatter.aliases)
   ];
 }
+function normalizeTagName(value) {
+  return value.trim().replace(/^#/, "").toLowerCase();
+}
+function asMarkdownFile(value) {
+  if (!isRecord(value))
+    return null;
+  return typeof value.path === "string" && typeof value.basename === "string" && value.extension === "md" ? value : null;
+}
+function asNativeSearchResultDom(value) {
+  if (!isRecord(value))
+    return null;
+  return typeof value.addResult === "function" && typeof value.removeResult === "function" && typeof value.getResult === "function" && typeof value.getMatchCount === "function" ? value : null;
+}
+function getObjectProperty(value, key) {
+  if (!isRecord(value))
+    return void 0;
+  try {
+    return value[key];
+  } catch (e) {
+    return void 0;
+  }
+}
+function textRanges(value) {
+  if (!Array.isArray(value))
+    return [];
+  const ranges = [];
+  for (const item of value) {
+    if (!Array.isArray(item) || item.length < 2)
+      continue;
+    const start = item[0];
+    const end = item[1];
+    if (typeof start !== "number" || typeof end !== "number" || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      continue;
+    }
+    ranges.push([start, end]);
+  }
+  return ranges;
+}
+function uniqueTextRanges(ranges) {
+  const seen = /* @__PURE__ */ new Set();
+  const unique = [];
+  for (const [start, end] of ranges) {
+    const key = `${start}:${end}`;
+    if (seen.has(key))
+      continue;
+    seen.add(key);
+    unique.push([start, end]);
+  }
+  return unique.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+function sameTextRanges(left, right) {
+  const a = uniqueTextRanges(left);
+  const b = uniqueTextRanges(right);
+  if (a.length !== b.length)
+    return false;
+  return a.every(([start, end], index) => {
+    const other = b[index];
+    return other !== void 0 && start === other[0] && end === other[1];
+  });
+}
+function rangesOverlap(left, right) {
+  return left[0] < right[1] && right[0] < left[1];
+}
+function hasNativePropertyMatches(result) {
+  return Array.isArray(result.properties) && result.properties.length > 0;
+}
+function nativeResultItem(value) {
+  if (!isRecord(value))
+    return null;
+  const result = getObjectProperty(value, "result");
+  return isRecord(result) ? value : null;
+}
 function resolveLanguage(preference) {
   if (preference !== "auto")
     return preference;
@@ -256,8 +335,20 @@ function resolveLanguage(preference) {
   return systemLanguage.startsWith("zh") ? "zh" : "en";
 }
 var TagToPagePlugin = class extends import_obsidian.Plugin {
+  constructor() {
+    super(...arguments);
+    this.tagSources = [];
+    this.aliasTargets = /* @__PURE__ */ new Map();
+    this.tagIndexDirty = true;
+    this.backlinkSyncTimer = null;
+    this.backlinkSyncInProgress = false;
+    this.backlinkSyncRequested = false;
+    this.appliedTagBacklinks = /* @__PURE__ */ new WeakMap();
+    this.backlinkIntegrationErrorReported = false;
+  }
   async onload() {
     await this.loadSettings();
+    this.registerBacklinkIntegration();
     this.registerDomEvent(
       document,
       "click",
@@ -277,6 +368,490 @@ var TagToPagePlugin = class extends import_obsidian.Plugin {
       this.registerAutocompleteOverride();
     }
     this.addSettingTab(new TagToPageSettingTab(this.app, this));
+  }
+  // ── tag backlinks ──
+  registerBacklinkIntegration() {
+    const markIndexDirty = () => {
+      this.tagIndexDirty = true;
+      this.scheduleBacklinkSync();
+    };
+    this.registerEvent(
+      this.app.metadataCache.on("changed", markIndexDirty, this)
+    );
+    this.registerEvent(
+      this.app.metadataCache.on("resolve", markIndexDirty, this)
+    );
+    this.registerEvent(
+      this.app.metadataCache.on("deleted", markIndexDirty, this)
+    );
+    this.registerEvent(this.app.vault.on("create", markIndexDirty, this));
+    this.registerEvent(this.app.vault.on("rename", markIndexDirty, this));
+    this.registerEvent(this.app.vault.on("delete", markIndexDirty, this));
+    this.registerEvent(
+      this.app.workspace.on(
+        "active-leaf-change",
+        () => this.scheduleBacklinkSync(),
+        this
+      )
+    );
+    this.registerEvent(
+      this.app.workspace.on(
+        "file-open",
+        () => this.scheduleBacklinkSync(),
+        this
+      )
+    );
+    this.registerEvent(
+      this.app.workspace.on(
+        "layout-change",
+        () => this.scheduleBacklinkSync(),
+        this
+      )
+    );
+    const backlinkSelector = ".backlink-pane, .workspace-leaf-content[data-type='backlink']";
+    const observer = new MutationObserver((mutations) => {
+      const backlinkChanged = mutations.some((mutation) => {
+        if (mutation.target instanceof Element && mutation.target.closest(backlinkSelector)) {
+          return true;
+        }
+        return [
+          ...Array.from(mutation.addedNodes),
+          ...Array.from(mutation.removedNodes)
+        ].some(
+          (node) => node instanceof Element && (node.matches(backlinkSelector) || node.querySelector(backlinkSelector))
+        );
+      });
+      if (backlinkChanged)
+        this.scheduleBacklinkSync();
+    });
+    if (document.body) {
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true
+      });
+    }
+    this.register(() => {
+      observer.disconnect();
+      if (this.backlinkSyncTimer !== null) {
+        window.clearTimeout(this.backlinkSyncTimer);
+        this.backlinkSyncTimer = null;
+      }
+    });
+    this.scheduleBacklinkSync(400);
+  }
+  scheduleBacklinkSync(delay = BACKLINK_SYNC_DELAY) {
+    if (this.backlinkSyncTimer !== null) {
+      window.clearTimeout(this.backlinkSyncTimer);
+    }
+    this.backlinkSyncTimer = window.setTimeout(() => {
+      this.backlinkSyncTimer = null;
+      if (this.backlinkSyncInProgress) {
+        this.backlinkSyncRequested = true;
+        return;
+      }
+      void this.syncBacklinkViews();
+    }, delay);
+  }
+  async setTagBacklinksEnabled(enabled) {
+    this.settings.tagBacklinksOn = enabled;
+    await this.saveSettings();
+    this.scheduleBacklinkSync(0);
+  }
+  rebuildTagIndex() {
+    var _a, _b;
+    this.tagSources = [];
+    this.aliasTargets.clear();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      const tags = (_a = cache == null ? void 0 : cache.tags) != null ? _a : [];
+      if (tags.length > 0)
+        this.tagSources.push({ file, tags });
+      for (const alias of frontmatterAliases(cache == null ? void 0 : cache.frontmatter)) {
+        const key = normalizeTagName(alias);
+        if (!key)
+          continue;
+        const targets = (_b = this.aliasTargets.get(key)) != null ? _b : [];
+        if (!targets.some((target) => target.path === file.path)) {
+          targets.push(file);
+        }
+        this.aliasTargets.set(key, targets);
+      }
+    }
+    this.tagIndexDirty = false;
+  }
+  getTagBacklinkMatches(target) {
+    if (this.tagIndexDirty)
+      this.rebuildTagIndex();
+    const matches = /* @__PURE__ */ new Map();
+    for (const source of this.tagSources) {
+      if (source.file.path === target.path)
+        continue;
+      const ranges = [];
+      for (const tag of source.tags) {
+        if (!this.tagPointsToFile(tag, source.file, target))
+          continue;
+        const start = tag.position.start.offset;
+        const end = tag.position.end.offset;
+        if (typeof start === "number" && typeof end === "number" && Number.isFinite(start) && Number.isFinite(end) && end > start) {
+          ranges.push([start, end]);
+        }
+      }
+      if (ranges.length > 0) {
+        matches.set(source.file.path, {
+          file: source.file,
+          ranges: uniqueTextRanges(ranges)
+        });
+      }
+    }
+    return Array.from(matches.values());
+  }
+  tagPointsToFile(tag, source, target) {
+    var _a, _b;
+    const tagName = normalizeTagName(tag.tag);
+    if (!tagName)
+      return false;
+    try {
+      const resolved = this.app.metadataCache.getFirstLinkpathDest(
+        tagName,
+        source.path
+      );
+      if (resolved)
+        return resolved.path === target.path;
+    } catch (err) {
+      console.warn("Tag to Page: failed to resolve tag backlink", err);
+    }
+    const aliasTargets = (_a = this.aliasTargets.get(tagName)) != null ? _a : [];
+    return aliasTargets.length === 1 && ((_b = aliasTargets[0]) == null ? void 0 : _b.path) === target.path;
+  }
+  findBacklinkControllers() {
+    const candidates = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const viewType of ["backlink", "markdown"]) {
+      for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
+        this.collectBacklinkControllers(
+          leaf.view,
+          3,
+          seen,
+          candidates,
+          null
+        );
+      }
+    }
+    return candidates;
+  }
+  collectBacklinkControllers(value, depth, seen, candidates, fallbackFile) {
+    if (!isRecord(value) || seen.has(value))
+      return;
+    seen.add(value);
+    const ownFile = asMarkdownFile(getObjectProperty(value, "file"));
+    const currentFile = ownFile != null ? ownFile : fallbackFile;
+    const backlinkFile = asMarkdownFile(
+      getObjectProperty(value, "backlinkFile")
+    );
+    const nextFallbackFile = currentFile != null ? currentFile : backlinkFile;
+    const backlinkDom = asNativeSearchResultDom(
+      getObjectProperty(value, "backlinkDom")
+    );
+    if (backlinkDom && !candidates.some((candidate) => candidate.controller === value)) {
+      candidates.push({
+        controller: value,
+        fallbackFile: nextFallbackFile
+      });
+    }
+    if (depth <= 0)
+      return;
+    let propertyNames = [];
+    try {
+      propertyNames = Object.getOwnPropertyNames(value);
+    } catch (e) {
+      return;
+    }
+    for (const propertyName of propertyNames) {
+      if (!/backlink|preview|mode|view/i.test(propertyName))
+        continue;
+      const child = getObjectProperty(value, propertyName);
+      if (child === value)
+        continue;
+      this.collectBacklinkControllers(
+        child,
+        depth - 1,
+        seen,
+        candidates,
+        nextFallbackFile
+      );
+    }
+  }
+  getBacklinkTarget(candidate) {
+    var _a, _b;
+    return (_b = (_a = candidate.fallbackFile) != null ? _a : asMarkdownFile(getObjectProperty(candidate.controller, "file"))) != null ? _b : asMarkdownFile(
+      getObjectProperty(candidate.controller, "backlinkFile")
+    );
+  }
+  async syncBacklinkViews() {
+    if (this.backlinkSyncInProgress) {
+      this.backlinkSyncRequested = true;
+      return;
+    }
+    this.backlinkSyncInProgress = true;
+    this.backlinkSyncRequested = false;
+    try {
+      if (!this.settings.tagBacklinksOn) {
+        await this.clearAppliedTagBacklinks();
+        return;
+      }
+      const contentCache = /* @__PURE__ */ new Map();
+      for (const candidate of this.findBacklinkControllers()) {
+        const target = this.getBacklinkTarget(candidate);
+        if (!target)
+          continue;
+        try {
+          await this.syncBacklinkController(
+            candidate,
+            target,
+            contentCache
+          );
+        } catch (err) {
+          if (!this.backlinkIntegrationErrorReported) {
+            this.backlinkIntegrationErrorReported = true;
+            console.warn(
+              "Tag to Page: native backlink integration is unavailable",
+              err
+            );
+          }
+        }
+      }
+    } finally {
+      this.backlinkSyncInProgress = false;
+      if (this.backlinkSyncRequested) {
+        this.scheduleBacklinkSync();
+      }
+    }
+  }
+  async clearAppliedTagBacklinks() {
+    const contentCache = /* @__PURE__ */ new Map();
+    for (const candidate of this.findBacklinkControllers()) {
+      const previous = this.appliedTagBacklinks.get(candidate.controller);
+      if (!previous)
+        continue;
+      const target = this.getBacklinkTarget(candidate);
+      const sameTarget = (target == null ? void 0 : target.path) === previous.targetPath;
+      const backlinkDom = asNativeSearchResultDom(
+        getObjectProperty(candidate.controller, "backlinkDom")
+      );
+      const unlinkedDom = asNativeSearchResultDom(
+        getObjectProperty(candidate.controller, "unlinkedDom")
+      );
+      if (!backlinkDom) {
+        this.appliedTagBacklinks.delete(candidate.controller);
+        continue;
+      }
+      let cleanupComplete = true;
+      for (const [path, ranges] of previous.rangesByPath) {
+        const file = asMarkdownFile(
+          this.app.vault.getAbstractFileByPath(path)
+        );
+        if (!file)
+          continue;
+        let content;
+        try {
+          content = await this.readBacklinkContent(file, contentCache);
+        } catch (err) {
+          cleanupComplete = false;
+          console.warn(
+            "Tag to Page: failed to restore a tag backlink source",
+            err
+          );
+          continue;
+        }
+        this.removeSyntheticRangesFromLinkedResult(
+          backlinkDom,
+          file,
+          ranges
+        );
+        if (sameTarget && unlinkedDom) {
+          this.ensureUnlinkedTagResult(
+            unlinkedDom,
+            file,
+            ranges,
+            content
+          );
+        }
+      }
+      if (cleanupComplete) {
+        this.appliedTagBacklinks.delete(candidate.controller);
+      }
+      this.updateNativeCount(
+        getObjectProperty(candidate.controller, "backlinkCountEl"),
+        backlinkDom.getMatchCount()
+      );
+      if (unlinkedDom) {
+        this.updateNativeCount(
+          getObjectProperty(candidate.controller, "unlinkedCountEl"),
+          unlinkedDom.getMatchCount()
+        );
+      }
+    }
+  }
+  async syncBacklinkController(candidate, target, contentCache) {
+    const controller = candidate.controller;
+    const backlinkDom = asNativeSearchResultDom(
+      getObjectProperty(controller, "backlinkDom")
+    );
+    if (!backlinkDom)
+      return;
+    const unlinkedDom = asNativeSearchResultDom(
+      getObjectProperty(controller, "unlinkedDom")
+    );
+    const matches = this.getTagBacklinkMatches(target);
+    const previous = this.appliedTagBacklinks.get(controller);
+    const sameTarget = (previous == null ? void 0 : previous.targetPath) === target.path;
+    const next = {
+      targetPath: target.path,
+      rangesByPath: /* @__PURE__ */ new Map()
+    };
+    for (const match of matches) {
+      let content;
+      const cachedContent = contentCache.get(match.file.path);
+      try {
+        content = cachedContent != null ? cachedContent : await this.readBacklinkContent(match.file, contentCache);
+      } catch (err) {
+        console.warn(
+          "Tag to Page: failed to read a tag backlink source",
+          err
+        );
+        continue;
+      }
+      const ranges = match.ranges.filter(
+        ([start, end]) => start >= 0 && end <= content.length
+      );
+      if (ranges.length === 0)
+        continue;
+      next.rangesByPath.set(match.file.path, ranges);
+      this.ensureLinkedTagResult(
+        backlinkDom,
+        match.file,
+        ranges,
+        content
+      );
+      if (unlinkedDom) {
+        this.removeRangesFromResult(
+          unlinkedDom,
+          match.file,
+          ranges,
+          content
+        );
+      }
+    }
+    if (previous && sameTarget) {
+      for (const [path, ranges] of previous.rangesByPath) {
+        if (next.rangesByPath.has(path))
+          continue;
+        const file = asMarkdownFile(
+          this.app.vault.getAbstractFileByPath(path)
+        );
+        if (!file)
+          continue;
+        this.removeSyntheticRangesFromLinkedResult(
+          backlinkDom,
+          file,
+          ranges
+        );
+      }
+    }
+    this.appliedTagBacklinks.set(controller, next);
+    this.updateNativeCount(
+      getObjectProperty(controller, "backlinkCountEl"),
+      backlinkDom.getMatchCount()
+    );
+    if (unlinkedDom) {
+      this.updateNativeCount(
+        getObjectProperty(controller, "unlinkedCountEl"),
+        unlinkedDom.getMatchCount()
+      );
+    }
+  }
+  async readBacklinkContent(file, contentCache) {
+    const cached = contentCache.get(file.path);
+    if (cached !== void 0)
+      return cached;
+    const content = await this.app.vault.cachedRead(file);
+    contentCache.set(file.path, content);
+    return content;
+  }
+  ensureLinkedTagResult(dom, file, tagRanges, content) {
+    const item = nativeResultItem(dom.getResult(file));
+    const result = item == null ? void 0 : item.result;
+    const currentRanges = textRanges(result == null ? void 0 : result.content);
+    const mergedRanges = uniqueTextRanges([
+      ...currentRanges,
+      ...tagRanges
+    ]);
+    if (!sameTextRanges(currentRanges, mergedRanges)) {
+      dom.addResult(
+        file,
+        { ...result != null ? result : {}, content: mergedRanges },
+        content,
+        true
+      );
+    }
+    const updated = nativeResultItem(dom.getResult(file));
+    if ((updated == null ? void 0 : updated.el) instanceof HTMLElement) {
+      updated.el.classList.add(TAG_BACKLINK_RESULT_CLASS);
+    }
+  }
+  ensureUnlinkedTagResult(dom, file, tagRanges, content) {
+    const item = nativeResultItem(dom.getResult(file));
+    const result = item == null ? void 0 : item.result;
+    const currentRanges = textRanges(result == null ? void 0 : result.content);
+    const mergedRanges = uniqueTextRanges([
+      ...currentRanges,
+      ...tagRanges
+    ]);
+    if (!sameTextRanges(currentRanges, mergedRanges)) {
+      dom.addResult(
+        file,
+        { ...result != null ? result : {}, content: mergedRanges },
+        content,
+        true
+      );
+    }
+  }
+  removeRangesFromResult(dom, file, rangesToRemove, fallbackContent) {
+    const item = nativeResultItem(dom.getResult(file));
+    const result = item == null ? void 0 : item.result;
+    if (!item || !result)
+      return;
+    const currentRanges = textRanges(result.content);
+    const remainingRanges = currentRanges.filter(
+      (current) => !rangesToRemove.some((range) => rangesOverlap(current, range))
+    );
+    if (sameTextRanges(currentRanges, remainingRanges))
+      return;
+    const content = typeof item.content === "string" ? item.content : fallbackContent;
+    if (remainingRanges.length === 0 && !hasNativePropertyMatches(result)) {
+      dom.removeResult(file);
+      return;
+    }
+    dom.addResult(
+      file,
+      { ...result, content: uniqueTextRanges(remainingRanges) },
+      content,
+      true
+    );
+  }
+  removeSyntheticRangesFromLinkedResult(dom, file, rangesToRemove) {
+    var _a, _b;
+    const item = nativeResultItem(dom.getResult(file));
+    if (!((_a = item == null ? void 0 : item.el) == null ? void 0 : _a.classList.contains(TAG_BACKLINK_RESULT_CLASS)))
+      return;
+    this.removeRangesFromResult(dom, file, rangesToRemove, (_b = item.content) != null ? _b : "");
+  }
+  updateNativeCount(value, count) {
+    if (!(value instanceof HTMLElement))
+      return;
+    const next = String(count);
+    if (value.textContent !== next)
+      value.textContent = next;
   }
   // ── click handler (Reading View + Live Preview) ──
   onTagTouchEnd(evt) {
@@ -510,6 +1085,7 @@ var TagToPagePlugin = class extends import_obsidian.Plugin {
     const storedMissingPageAction = stored.missingPageAction;
     this.settings = {
       clickToPage: stored.clickToPage !== false,
+      tagBacklinksOn: stored.tagBacklinksOn !== false,
       missingPageAction: storedMissingPageAction === "create" || storedMissingPageAction === "openTag" || storedMissingPageAction === "edit" || storedMissingPageAction === "none" ? storedMissingPageAction : DEFAULT_SETTINGS.missingPageAction,
       autocompleteOn: stored.autocompleteOn === true,
       autocompleteAliases: stored.autocompleteAliases !== false,
@@ -580,6 +1156,10 @@ var TagToPageSettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.clickToPage = value;
       await this.plugin.saveSettings();
       this.update();
+      return;
+    }
+    if (key === "tagBacklinksOn") {
+      await this.plugin.setTagBacklinksEnabled(value);
       return;
     }
     if (key === "autocompleteAliases") {
@@ -663,6 +1243,15 @@ var TagToPageSettingTab = class extends import_obsidian.PluginSettingTab {
               type: "toggle",
               key: "clickToPage",
               defaultValue: DEFAULT_SETTINGS.clickToPage
+            }
+          },
+          {
+            name: this.t("tagBacklinksName"),
+            desc: this.t("tagBacklinksDesc"),
+            control: {
+              type: "toggle",
+              key: "tagBacklinksOn",
+              defaultValue: DEFAULT_SETTINGS.tagBacklinksOn
             }
           },
           {
